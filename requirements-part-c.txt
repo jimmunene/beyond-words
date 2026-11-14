@@ -1,0 +1,12 @@
+# Minimal standalone Part C environment: no pygame, Unicorn hardware or SDK required.
+numpy>=1.26
+scipy>=1.12
+matplotlib>=3.8
+pillow>=10.0
+qrcode>=7.4
+
+# Optional only when using ElevenLabs cloud voices:
+# elevenlabs>=2.0
+# Optional Windows/Linux local TTS fallback:
+# pyttsx3>=2.90
+# macOS offline speech uses built-in `say`; no pyttsx3 is needed.
