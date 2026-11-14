@@ -1,0 +1,24 @@
+name: Part C - voice and postcard checks
+on:
+  push:
+    branches: ["feature/voice-art"]
+  pull_request:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  part-c:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install Part C dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-part-c.txt
+      - name: Run Part C tests
+        run: python -m unittest tests.test_part_c -v
+      - name: Run isolated artwork demonstration
+        run: python tools/part_c_demo.py --synthetic --confirm-test --message "HELLO" --output-dir /tmp/bw-postcards
