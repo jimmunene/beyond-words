@@ -1,0 +1,38 @@
+# BrainType Postcards configuration. Every script reads this file.
+# Change numbers here, never hard-code them in scripts.
+
+# --- EEG stream ---
+stream_name: BrainType_EEG     # LSL stream name the classifier looks for
+fs: 250                        # Unicorn sample rate (confirm at g.tec booth)
+n_channels: 8                  # EEG channels in the stream
+eeg_channels: [5, 6, 7]        # channel INDICES used for SSVEP (occipital). Set from the g.tec channel map!
+
+# --- Stimuli ---
+refresh_rate: 60               # MEASURE the venue monitor; flicker is computed from this
+freqs: [7.0, 9.0, 11.0, 13.0]  # one per box: top-left, top-right, bottom-left, bottom-right
+
+# --- Classifier ---
+harmonics: 3
+window_s: 2.0                  # analysis window (raise to 3.0 if unstable)
+step_s: 0.25                   # how often a decision is computed
+bandpass: [5.0, 40.0]
+notch_hz: 60.0                 # US mains
+use_fbcca: false               # filter-bank CCA: turn on if plain CCA is weak
+
+# --- Selector (when is a look a "click"?) ---
+margin_tau: 0.05               # top1 - top2 correlation must exceed this
+n_consecutive: 3               # ...for this many decisions in a row
+lockout_s: 1.0                 # pause after each selection
+
+# --- App ---
+max_postcard_chars: 12
+gallery_url: "https://YOUR-GALLERY-LINK"   # Base44 gallery (or your custom domain)
+use_llm: false                 # Gemini word prediction (needs GEMINI_API_KEY)
+use_tts: false                 # ElevenLabs voice (needs ELEVENLABS_API_KEY)
+elevenlabs_voice_id: "YOUR_VOICE_ID"
+
+# --- Local UDP ports (all on 127.0.0.1) ---
+ports:
+  selection: 5005              # classifier -> UI (scores + selections)
+  sim_target: 5006             # UI -> synthetic stream ("which box am I looking at")
+  control: 5007                # UI -> classifier (start/stop session recording)

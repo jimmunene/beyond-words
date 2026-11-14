@@ -1,0 +1,77 @@
+# Python / local development
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+env/
+.env
+.env.*
+!.env.example
+
+# Operating system / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Personal brain-signal data, datasets, generated/derived signals
+*.bdf
+*.edf
+*.fif
+*.set
+*.vhdr
+*.vmrk
+*.eeg
+*.xdf
+*.npy
+*.npz
+*.mat
+*.h5
+*.hdf5
+*.parquet
+*.csv
+# Keep source code and a small custom word list; do not commit private recordings.
+/data/*
+!/data/custom_words.txt
+
+# Generated artifacts / logs / session recordings
+/sessions/*
+!/sessions/.keep
+/logs/*
+!/logs/.keep
+/postcards/*
+!/postcards/.keep
+/voice/cache/
+*.mp3
+*.wav
+*.part
+*.log
+
+# Generated language corpus may be subject to external licensing
+/data/corpus.json
+
+# Additional rules supplied in updated starter
+*.key
+sessions/*.npy
+logs/*.csv
+postcards/*.png
+postcards/to_upload/
+voice/cache/
+data/*.npy
+data/*.mat
+data/*.h5
+data/*.hdf5
+data/count_*.txt
+data/corpus.json
+
+# Optional corpus and local artifacts
+/data/aac_sentences.txt
+/data/gtec_ssvep.npy
+/data/gtec_trials.csv
+/docs/live_tuning_log.md

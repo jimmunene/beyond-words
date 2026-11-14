@@ -1,0 +1,14 @@
+numpy
+scipy
+pyyaml
+pylsl
+pygame
+matplotlib
+pillow
+qrcode
+# optional add-ons
+google-genai      # Gemini word prediction (use_llm: true)
+elevenlabs        # ElevenLabs voice (use_tts: true)
+
+# offline voice fallback
+pyttsx3
