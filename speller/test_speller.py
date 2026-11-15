@@ -363,6 +363,25 @@ def test_every_builtin_phrase_has_a_translation_and_unknown_text_falls_back():
     assert heard[0].startswith("Quisiera") and heard[1] == "My cat is called Biscuit."
 
 
+def test_person_picks_mode_and_language_by_looking():
+    langs = [("en", "English"), ("es", "Spanish"), ("hi", "Hindi"), ("fr", "French"), ("sw", "Swahili")]
+    sp = Speller(PRED, languages=langs)
+    sp.welcome()
+    assert sp.labels() == ["POSTCARD", "PATIENT", "VOICE: ENGLISH", ""] and sp.in_menu
+    sp.select(2)                                 # languages, three per page
+    assert sp.labels() == ["ENGLISH", "SPANISH", "HINDI", "MORE ▶"]
+    sp.select(3)
+    assert sp.labels()[:2] == ["FRENCH", "SWAHILI"] and "BACK" in sp.labels()[3]
+    sp.select(1)
+    assert sp.language == "sw" and sp.screen == "welcome" and sp.labels()[2] == "VOICE: SWAHILI"
+    sp.select(1)                                 # PATIENT
+    assert sp.mode == "patient" and sp.screen == "needs1" and sp.language == "sw"
+    sp.welcome(); sp.select(0)                   # POSTCARD
+    assert sp.mode == "postcard" and sp.screen == "root" and "QUICK" in sp.labels()[3]
+    sp.welcome(); sp.select(3)                   # the empty box does nothing
+    assert sp.screen == "welcome"
+
+
 def test_llm_answer_must_match_and_arrive_in_time():
     p = Predictor(llm_deadline_s=0.0)        # deadline already passed for late answers
     local = p.suggest("I WANT W")

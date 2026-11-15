@@ -151,8 +151,9 @@ HINTS = {
     "talk1": "Pick something to say", "talk2": "Pick something to say",
     "my1": "Pick something to say", "my2": "Pick something to say",
     "answer": "Answer the question",
+    "welcome": "Look at what you would like to do",
 }
-MENUS = ("needs", "pain", "talk", "my", "answer", "body", "rest", "easy", "asked", "say")          # screens that are not part of spelling
+MENUS = ("needs", "pain", "talk", "my", "answer", "body", "rest", "easy", "asked", "say", "welcome", "lang")          # screens that are not part of spelling
 GROUP_LETTERS = {"AI": "ABCDEFGHI", "JR": "JKLMNOPQR"}     # letter-group pages that can offer a word
 
 
@@ -170,7 +171,8 @@ def easy_options(screens):
 
 class Speller:
     def __init__(self, predictor, mode="postcard", max_chars=12, quick_messages=None,
-                 patient_max_chars=PATIENT_MAX_CHARS, my_phrases=None, easy=False, group_words=False):
+                 patient_max_chars=PATIENT_MAX_CHARS, my_phrases=None, easy=False, group_words=False,
+                 languages=None):
         self.predictor = predictor
         self.postcard_max, self.patient_max = max_chars, patient_max_chars
         self.screens = dict(SCREENS)
@@ -190,6 +192,14 @@ class Speller:
         self.say_text = ""                      # spelled sentence waiting on the "say it?" page
         self.chime = False                      # the phrase just picked wants the call bell (UI plays it)
         self.last_spoken = ""
+        # The person can choose the mode and the spoken language themselves (welcome page).
+        self.languages = list(languages or [("en", "English")])     # [(code, name)]
+        self.language = self.languages[0][0]
+        pages = [self.languages[i:i + 3] for i in range(0, len(self.languages), 3)]
+        for n, page in enumerate(pages, 1):
+            items = [(name.upper(), ("language", code)) for code, name in page] + [None] * (3 - len(page))
+            items.append(("MORE ▶", ("goto", f"lang{n + 1}")) if n < len(pages) else ("← BACK", ("welcome",)))
+            self.screens[f"lang{n}"] = items
         self.set_mode(mode)
 
     def set_mode(self, mode):
@@ -258,6 +268,12 @@ class Speller:
             return False
         return self.assistant.get("expand", self.text)
 
+    def welcome(self):
+        """First page for a new person: they pick postcard or patient mode, and the voice's
+        language, by looking, without a helper touching the keyboard."""
+        self.text, self.history, self.stack, self.finished, self.spoken = "", [], [], False, None
+        self.screen = "welcome"
+
     def ask(self, question="", options=None):
         """A helper asked a question (patient mode). Without options: YES / NO / NOT SURE.
         options=[] shows an empty page while suggestions are fetched; options=[...] shows up to
@@ -281,6 +297,8 @@ class Speller:
             return "Q: " + self.question
         if self.screen == "say":
             return "Say it?"
+        if self.screen.startswith("lang"):
+            return "Which language should the voice speak?"
         if self.screen == "easy":
             return f"Look left to say it, or NEXT for another  ({self.easy_i + 1} of {len(self.easy_list)})"
         if self.screen in HINTS:
@@ -301,6 +319,10 @@ class Speller:
             return [None] * 4
         if self.screen == "easy":
             return [self.easy_list[self.easy_i], None, None, ("NEXT ▶", ("next",))]
+        if self.screen == "welcome":
+            name = dict(self.languages).get(self.language, "English")
+            return [("POSTCARD", ("mode", "postcard")), ("PATIENT", ("mode", "patient")),
+                    (f"VOICE: {name.upper()}", ("goto", "lang1")) if len(self.languages) > 1 else None, None]
         if self.screen == "say":                            # spelled words: say them, or Gemini's sentence
             better = self.expanded
             return [("SAY IT", ("say", self.say_text)),
@@ -403,6 +425,13 @@ class Speller:
             self.screen, self.stack = self._menu_home(), []
         elif kind == "home":
             self._go_home()
+        elif kind == "mode":
+            self.set_mode(action[1])
+        elif kind == "language":
+            self.language = action[1]
+            self.welcome()
+        elif kind == "welcome":
+            self.welcome()
         elif kind == "needs":
             self.screen, self.stack = self._menu_home(), []
         elif kind == "phrase":

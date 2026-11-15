@@ -75,6 +75,14 @@ Arabic, Chinese, Japanese or Tamil. **F5** on the start screen (or **L** while t
 - The translations are machine-made and use masculine forms where the language needs a gender.
   Have a native speaker check them before real use.
 
+## Reaching a caregiver who is not in the room (`speller/notify.py`)
+
+COME HERE ("I need you. Please come to me.") and EMERGENCY can also alert a phone: an urgent push
+alert (ntfy, free), a real call plus text message (Twilio), or a Telegram message. Each channel is
+switched on by environment variables; see the top of `speller/notify.py`. Nothing is sent when
+none is set, and never during the automatic demo. An unanswered EMERGENCY alerts again once a
+minute, five times at most. Test: `python speller/notify.py "Test: I need you"`.
+
 ## Not done yet
 
 - **No separate confirmation step.** `voice/tts.py` asks callers to state that a message was

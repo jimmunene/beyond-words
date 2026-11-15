@@ -5,31 +5,32 @@
 stream_name: BrainType_EEG     # LSL stream name the classifier looks for
 fs: 250                        # Unicorn sample rate (confirm at g.tec booth)
 n_channels: 8                  # EEG channels in the stream
-eeg_channels: [5, 6, 7]        # channel INDICES used for SSVEP (occipital). Set from the g.tec channel map!
+eeg_channels: [0, 1, 2, 3, 4, 5, 6, 7]   # all 8 visual-cortex electrodes (PO7 PO3 POz PO4 PO8 O1 Oz O2)
 
 # --- Stimuli ---
 refresh_rate: 60               # MEASURE the venue monitor; flicker is computed from this
-freqs: [7.0, 9.0, 11.0, 13.0]  # one per box: top-left, top-right, bottom-left, bottom-right
+freqs: [9.0, 10.0, 12.0, 15.0]  # one per box: top-left, top-right, bottom-left, bottom-right
 
 # --- Classifier ---
 harmonics: 3
-window_s: 2.0                  # analysis window (raise to 3.0 if unstable)
+window_s: 3.0                  # analysis window (3 s: fewer wrong picks than 2 s)
 step_s: 0.25                   # how often a decision is computed
 bandpass: [5.0, 40.0]
 notch_hz: 60.0                 # US mains
-use_fbcca: false               # filter-bank CCA: turn on if plain CCA is weak
+use_fbcca: true                # filter-bank CCA: much better at 15 Hz than plain CCA
 
 # --- Selector (when is a look a "click"?) ---
-margin_tau: 0.05               # top1 - top2 correlation must exceed this
+margin_tau: 0.08               # top1 - top2 score must exceed this (0.05 fired 8-15 false picks a minute at rest)
 n_consecutive: 3               # ...for this many decisions in a row
 lockout_s: 1.0                 # pause after each selection
 
 # --- App ---
 max_postcard_chars: 12
 gallery_url: "https://YOUR-GALLERY-LINK"   # Base44 gallery (or your custom domain)
-use_llm: false                 # Gemini word prediction (needs GEMINI_API_KEY)
-use_tts: false                 # ElevenLabs voice (needs ELEVENLABS_API_KEY)
-elevenlabs_voice_id: "YOUR_VOICE_ID"
+use_llm: true                  # Gemini word prediction (needs GEMINI_API_KEY)
+use_tts: true                  # ElevenLabs voice (needs ELEVENLABS_API_KEY)
+alert_in_demo: false           # true = the automatic demo also alerts the phone (only for recording a video)
+elevenlabs_voice_id: "EXAVITQu4vr4xnSDxMaL"   # ElevenLabs premade voice "Sarah"
 
 # --- Local UDP ports (all on 127.0.0.1) ---
 ports:

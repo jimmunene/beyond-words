@@ -2,17 +2,21 @@
 
     python speller/ui.py --input keyboard   # keys 1-4 select directly (UI dev, demo backup)
     python speller/ui.py --input sim        # keys 1-4 = where you "look"; synthetic EEG -> classifier -> UI
+    python speller/ui.py --input sim --signal replay   # same, with REAL recorded EEG (acquisition/dataset_stream.py)
     python speller/ui.py --input eeg        # live headset (or replay) via classifier_node.py
     add --windowed for a window instead of fullscreen, --display 1 for the second monitor, --mute for no sounds
 
 Operator keys:
   Intro screen : type nickname, ENTER = start visitor, F1 postcard mode, F2 patient mode, F3 next voice
+                 (person_chooses: true in config.yaml: the person picks mode and language by looking instead)
   While typing : P pause/resume, T cued accuracy test on/off, ESC back to intro
                  patient mode: Q = you asked a yes/no question (shows YES / NO / NOT SURE),
                  R = say the last phrase again, SPACE = acknowledge an emergency alarm
                  (sim mode: 1-4 = look at a box, 0 = look away)
   Result screen: Y = post to gallery, N = keep private, SPACE = next visitor
                  L = next spoken language (start screen: F5)
+                 sim / dataset replay: A = automatic demo on / off (types demo_message, or says
+                 demo_phrases in patient mode). Dataset replay starts in automatic demo.
   Anywhere     : TAB = show all keys. Start screen: F4 = two-box easy mode (patient, weak signal)
 """
 import argparse
@@ -33,9 +37,10 @@ from art.postcard import make_postcard  # noqa: E402
 from common import ROOT, UDPReceiver, UDPSender, load_config  # noqa: E402
 from speller.assistant import Assistant  # noqa: E402
 from speller.languages import LANGUAGES, V3_LANGS, Translator, prefetch  # noqa: E402
+from speller.notify import PhoneAlert  # noqa: E402
 from speller.predictor import Predictor  # noqa: E402
 from speller.sounds import SoundBank  # noqa: E402
-from speller.state_machine import Speller, load_phrases  # noqa: E402
+from speller.state_machine import SCREENS, Speller, load_phrases  # noqa: E402
 from upload.base44_upload import upload  # noqa: E402
 from voice.tts import speak  # noqa: E402
 
@@ -73,6 +78,7 @@ SUBTITLES = {
     "REST": "pause the screen", "MY PHRASES": "your own sayings", "COME HERE": "rings a bell",
     "PAIN": "then: where it hurts", "EMERGENCY": "sounds the alarm",
     "SAY IT": "as you typed it", "SAY GEMINI'S": "the fuller sentence",
+    "POSTCARD": "spell a short message", "PATIENT": "say what you need",
 }
 
 
@@ -103,7 +109,13 @@ class App:
         self.predictor.llm_patient = bool(self.cfg.get("llm_in_patient_mode", False))   # default: postcards only
         self.speller = Speller(self.predictor, "postcard", self.cfg["max_postcard_chars"],
                                quick_messages=self.cfg.get("quick_messages"),
-                               my_phrases=load_phrases(ROOT / "data" / "my_phrases.txt"))
+                               my_phrases=load_phrases(ROOT / "data" / "my_phrases.txt"),
+                               languages=LANGUAGES)
+        # Normal flow: the helper picks the mode on the start screen (F1 / F2 / click) and the language
+        # with the picker. With person_chooses: true in config.yaml no mode is fixed, and the person
+        # picks mode and language by looking at a first page of boxes instead.
+        self.person_chooses = bool(self.cfg.get("person_chooses", False))
+        self.preset = None if self.person_chooses else "postcard"
         self.from_clf = UDPReceiver(self.cfg["ports"]["selection"]) if args.input != "keyboard" else None
         self.to_clf = UDPSender(self.cfg["ports"]["control"])
         self.to_sim = UDPSender(self.cfg["ports"]["sim_target"])
@@ -142,6 +154,21 @@ class App:
         if self.cfg.get("llm_in_patient_mode", False):
             self.speller.assistant = self.assistant
         self.translator = Translator(self.assistant)
+        self.alert = PhoneAlert()                   # call / text / push to a caregiver who is not in the room
+        self.alert_note = ("", GREEN, 0.0)          # what to show about the last phone alert
+        self.alert_t, self.alarm_calls = 0.0, 0     # last COME HERE alert; alerts sent for this alarm
+        # --input sim --signal replay: acquisition/dataset_stream.py plays real recorded EEG (g.tec dataset)
+        self.dataset = args.input == "sim" and getattr(args, "signal", "live") == "replay"
+        self.auto, self.auto_t = "", 0.0             # automatic demo: the message being typed, last look
+        self.auto_say = []                          # automatic demo in patient mode: phrases still to be said
+        self.auto_spell = ""                        # ...and then one sentence to spell out and speak
+        self.auto_n = {"postcard": 0, "patient": 0}  # how many demos have run (each visitor gets the next message)
+        self.letter_path = {}                       # letter -> (group box, subgroup box, letter box)
+        for gi, group in enumerate(["AI", "JR", "SZ"]):
+            for si, (_, action) in enumerate(SCREENS[group][:3]):
+                for li, item in enumerate(SCREENS[action[1]]):
+                    if item[1][0] == "char":
+                        self.letter_path[item[1][1]] = (group, gi, action[1], si, li)
         self.click_zones = []                       # start screen: (rect, what a click there does)
         self.lang_i = 0                             # language the voice speaks (index into LANGUAGES)
         self.said_in = ("", "", 0.0)                # (language name, translated sentence, when)
@@ -230,6 +257,7 @@ class App:
 
     def next_language(self, step=1):
         self.lang_i = (self.lang_i + step) % len(LANGUAGES)
+        self.speller.language = LANGUAGES[self.lang_i][0]
         self.said_in = ("", "", 0.0)
 
     # ---------------------------------------------------------------- look and feel
@@ -546,11 +574,19 @@ class App:
             self.say(self.speller.spoken)
             self.write_log(now, "spoken", screen, text=self.speller.spoken)     # for speller/care_report.py
             self.speller.spoken = None
+        if self.speller.language != LANGUAGES[self.lang_i][0]:      # the person picked a language by looking
+            self.lang_i = [c for c, _ in LANGUAGES].index(self.speller.language)
+            self.said_in = ("", "", 0.0)
+            self.spoken = ("Hello!", now)
+            self.say("Hello!")                           # greet in the new language, as confirmation
         if self.speller.chime:                       # call bell: "come here", heard across the room
             self.sounds.play("bell")
             self.speller.chime = False
+            self.phone_alert(now)                        # ...and on their phone, if nobody is in the room
         if self.speller.alarm:                       # EMERGENCY: siren + repeated voice until a helper answers
             self.alarm_t0 = self.alarm_said = now
+            self.alarm_calls = 1
+            self.phone_alert(now, urgent=True)
             self.sounds.play("alarm", loop=True)
             self.write_log(now, "emergency", screen, box, label, -1, confidence, dt, "")
         if self.speller.finished:
@@ -601,6 +637,146 @@ class App:
             if self.state == "spell" and self.speller.screen == "asked":
                 self.show_answers(question, got or None)
 
+    def auto_box(self):
+        """Automatic demo: which box must be looked at next to type self.auto and finish?"""
+        sp, goal = self.speller, self.auto
+        if sp.screen == "say":                                # patient mode, after DONE: say it as typed
+            return 0
+        if sp.in_menu:                                        # patient menu pages: find the way to SPELL
+            return self.route(lambda action: action == ("goto", "root"))
+        text = sp.text
+        want = "done" if text.strip() == goal else "delete" if not goal.startswith(text) else goal[len(text)]
+        if want in ("done", "delete"):
+            route = {"root": 2, "SZ": 3, "CTRL": 1 if want == "done" else 0}
+        else:
+            group, gi, sub_screen, si, li = self.letter_path[want]
+            word = goal[len(text) - len(text.split(" ")[-1]):].split(" ")[0]      # the word being typed
+            if sp.screen == "root" and text and sp.suggestion == word:
+                return 3                                                       # box 4 finishes the word
+            route = {"root": gi, group: si, sub_screen: li}
+        if sp.screen in route:
+            return route[sp.screen]
+        for i, item in enumerate(sp.items()):                 # somewhere unexpected (a misread look): go back
+            if item and item[1][0] in ("back", "home", "needs"):
+                return i
+        return 3
+
+    def route(self, wanted):
+        """Automatic demo: the box that leads, by the shortest way through the menu pages, to an
+        item for which wanted(action) is true. None if there is no way. Never goes via EMERGENCY."""
+        sp = self.speller
+
+        def edges(screen):
+            for i, item in enumerate(sp.items() if screen == sp.screen else sp.screens.get(screen, [])):
+                if not item:
+                    continue
+                kind = item[1][0]
+                if wanted(item[1]):
+                    yield i, None
+                elif kind == "goto":
+                    yield i, item[1][1]
+                elif kind in ("needs", "home", "back", "welcome"):
+                    yield i, "needs1"
+
+        seen, queue = {sp.screen}, [(sp.screen, None)]
+        while queue:
+            screen, first = queue.pop(0)
+            for i, nxt in edges(screen):
+                step = i if first is None else first
+                if nxt is None:
+                    return step
+                if nxt not in seen:
+                    seen.add(nxt)
+                    queue.append((nxt, step))
+        return None
+
+    def auto_phrase_box(self):
+        """Automatic demo, patient mode: the box on the way to the next phrase in self.auto_say."""
+        target = self.auto_say[0]
+        return self.route(lambda action: action[0] == "phrase" and action[1] == target)
+
+    def start_auto(self):
+        """Begin the automatic demo for the current mode (sim / dataset replay only). Each run takes
+        the next message from the list, so every visitor sees something different."""
+        self.auto, self.auto_say, self.auto_spell = "", [], ""
+        if self.args.input != "sim":
+            return
+
+        def clean(text, limit):
+            return " ".join("".join(c for c in str(text).upper() if "A" <= c <= "Z" or c == " ").split())[:limit].strip()
+
+        mode = self.speller.mode
+        n = self.auto_n[mode]
+        self.auto_n[mode] += 1
+        if mode == "postcard":
+            messages = self.cfg.get("demo_messages") or ([self.cfg["demo_message"]] if self.cfg.get("demo_message") else
+                                                         ["HI MOM", "HELLO EMU", "I LOVE YOU", "THANK YOU", "BRAIN POWER",
+                                                          "SEE YOU SOON", "GO EAGLES", "MIND BLOWN"])
+            self.auto = clean(messages[n % len(messages)], self.speller.max_chars)
+        else:
+            self.auto_say = list(self.cfg.get("demo_phrases") or [
+                "I would like some water, please.", "I am in pain. Please help me.", "The pain is in my chest.",
+                "Could you come here, please?", "Thank you."])
+            sentences = self.cfg.get("demo_sentences") or ["I AM COLD", "CALL MY SON", "TURN ME PLEASE", "I LOVE YOU ALL"]
+            self.auto_spell = clean(sentences[n % len(sentences)], self.speller.max_chars)
+
+    def auto_step(self, now):
+        """Automatic demo (sim / dataset replay): the app chooses where to "look", so the recorded
+        brain signals type a message, or say a few needs, with no key presses. Decoding is still real."""
+        if self.state != "spell" or self.paused or self.test or self.speller.alarm or not (self.auto or self.auto_say):
+            return
+        patient = self.speller.mode == "patient"
+        if self.auto_say and self.speller.last_spoken == self.auto_say[0]:
+            self.speller.last_spoken = ""                     # that phrase was said: on to the next one
+            self.auto_say.pop(0)
+            if not self.auto_say:
+                self.auto, self.auto_spell = self.auto_spell, ""      # then spell a sentence and speak it
+                return
+        elif patient and self.auto and not self.auto_say and self.speller.last_spoken == self.auto.capitalize() + ".":
+            self.auto = ""                                    # the spelled sentence was spoken: demo finished
+            return
+        if self.sim_target >= 0:
+            if now - self.auto_t > 9.0:                       # nothing was decoded: look away and try again
+                self.sim_target = -1
+                self.to_sim.send({"target": -1})
+                self.last_sel_t = now
+        elif now - self.last_sel_t > (4.5 if now - self.spoken[1] < 4.5 else 1.5):   # let a phrase be heard first
+            box = self.auto_phrase_box() if self.auto_say else self.auto_box()
+            if box is None:                                   # no way there from here: skip it
+                if self.auto_say:
+                    self.auto_say.pop(0)
+                else:
+                    self.auto = ""
+                return
+            self.sim_target, self.auto_t = box, now
+            self.to_sim.send({"target": box})
+
+    def sync_alert(self):
+        """Pick up the outcome of the last phone alert (it is sent in the background)."""
+        if self.alert.last[0] and self.alert.last[2] > self.alert_note[2]:
+            self.alert_note = ("Phone alert: " + self.alert.last[0], GREEN if self.alert.last[1] else RED,
+                               self.alert.last[2])
+
+    def phone_alert(self, now, urgent=False):
+        """COME HERE or EMERGENCY: also reach the caregiver's phone, if that is set up.
+        Not during the automatic demo, so a booth demo never calls anybody (unless
+        alert_in_demo: true is set in config.yaml, e.g. to record a video)."""
+        if not self.alert.enabled:
+            return
+        if (self.auto or self.auto_say) and not self.cfg.get("alert_in_demo", False):
+            self.alert_note = ("Phone alert skipped (automatic demo)", MUTED, now)
+            return
+        if not urgent and now - self.alert_t < 30:           # a second look within 30 s does not call again
+            return
+        who = (self.nickname or str(self.cfg.get("alert_name", ""))).strip()
+        text = ("EMERGENCY! I need help right now." if urgent else
+                str(self.cfg.get("alert_message", "I need you. Please come to me.")))
+        if self.alert.send((f"{who}: " if who else "") + text, urgent=urgent):
+            self.alert_t = now
+            self.alert_note = ("Calling your caregiver's phone..." if self.alert.twilio else
+                               "Alerting your caregiver's phone...", CYAN, now)
+            self.write_log(now, "phone_alert", text="emergency" if urgent else "come here")
+
     def handle_key(self, e):
         k = e.key
         if k == pygame.K_TAB:
@@ -625,15 +801,16 @@ class App:
             return True
         if self.state == "intro":
             if k == pygame.K_F1:
-                self.speller.set_mode("postcard")
+                self.choose_preset("postcard")
             elif k == pygame.K_F2:
-                self.speller.set_mode("patient")
+                self.choose_preset("patient")
             elif k in (pygame.K_F5, pygame.K_RIGHT):         # language the voice speaks
                 self.next_language()
             elif k == pygame.K_LEFT:
                 self.next_language(-1)
             elif k == pygame.K_F4:                           # two-box easy mode (patient), for a weak signal
                 self.speller.easy = not self.speller.easy
+                self.preset = "patient"                          # (two boxes cannot show the choice page)
                 self.speller.set_mode("patient")
             elif k == pygame.K_F3 and VOICES:
                 self.voice_i = (self.voice_i + 1) % len(VOICES)
@@ -668,6 +845,13 @@ class App:
             elif k == pygame.K_r and self.speller.last_spoken:
                 self.spoken = (self.speller.last_spoken, time.time())
                 self.say(self.speller.last_spoken)               # "say that again"
+            elif k == pygame.K_a and self.args.input == "sim":     # automatic demo on / off
+                if self.auto or self.auto_say:
+                    self.auto, self.auto_say, self.auto_spell = "", [], ""
+                else:
+                    self.start_auto()
+                self.sim_target = -1
+                self.to_sim.send({"target": -1})
             elif k == pygame.K_t:
                 self.test = not self.test
                 self.test_n = self.test_ok = 0
@@ -704,6 +888,7 @@ class App:
 
     def to_intro(self):
         self.stop_alarm()
+        self.auto, self.auto_say = "", []
         self.asking, self.ask_wait = None, ("", 0.0)
         self.state, self.nickname = "intro", ""
         self.test, self.cued = False, -1
@@ -711,14 +896,27 @@ class App:
             self.sim_target = -1
             self.to_sim.send({"target": -1})
 
+    def choose_preset(self, mode):
+        """Helper shortcut on the start screen: fix the mode (again = let the person choose)."""
+        self.preset = None if (self.person_chooses and self.preset == mode) else mode
+        self.speller.set_mode(self.preset or "postcard")
+
     def start_visitor(self):
-        self.speller.set_mode(self.speller.mode)
+        self.speller.set_mode(self.preset or "postcard")
+        if not self.preset:                              # the person picks mode and language by looking
+            self.speller.language = LANGUAGES[self.lang_i][0]
+            self.speller.welcome()
         now = time.time()
         self.state, self.session_t0, self.last_sel_t, self.n_sel = "spell", now, now, 0
         self.flash, self.spoken = (-1, 0.0, ""), ("", 0.0)
         self.to_clf.send({"cmd": "start_session"})
         self.paused = False
         self.to_clf.send({"cmd": "resume"})          # also clears the classifier's old EEG window
+        if self.dataset:                             # dataset_stream.py --dataset both: next recorded person
+            self.sim_target = -1
+            self.to_sim.send({"target": -1, "person": "next"})
+        if self.dataset and self.cfg.get("auto_demo", True) and not self.speller.easy:
+            self.start_auto()                        # dataset replay runs by itself; A switches to manual
 
     # ---------------------------------------------------------------- postcard
     def begin_postcard(self):
@@ -750,8 +948,11 @@ class App:
             extra = {}
             if labelled:                 # say honestly where the signal and the selections came from
                 signal = getattr(self.args, "signal", "live")
-                source = {"keyboard": signal, "sim": "synthetic", "eeg": signal}[self.args.input]
-                mode = {"keyboard": "keyboard", "sim": "synthetic", "eeg": "eeg"}[self.args.input]
+                source = {"keyboard": signal, "sim": "replay" if self.dataset else "synthetic",
+                          "eeg": signal}[self.args.input]
+                # dataset replay: the EEG is real but a key chose which recording played, so not "eeg"
+                mode = {"keyboard": "keyboard", "sim": "keyboard" if self.dataset else "synthetic",
+                        "eeg": "eeg"}[self.args.input]
                 extra = {"signal_source": source, "input_mode": mode}
             self.made = ("ok", make_postcard(eeg, self.cfg["fs"], self.message, self.nickname, **extra))
         except Exception as e:
@@ -794,6 +995,8 @@ class App:
         if self.args.input == "keyboard":
             return "KEYBOARD DEMO MODE - not using EEG", AMBER
         if now - self.scores_t < 1.5:
+            if self.dataset:
+                return "Recorded human EEG (SSVEP dataset replay) - decoded live", GREEN
             return ("Simulated EEG - classifier live" if self.args.input == "sim" else "EEG classifier live"), GREEN
         return "Waiting for classifier (start classifier_node.py)", RED
 
@@ -813,7 +1016,7 @@ class App:
     def draw_typed(self):
         sp = self.speller
         bar = self.typed_bar                                # (the bar itself is part of the background)
-        if sp.text or sp.mode == "postcard" or not sp.in_menu:
+        if sp.text or not sp.in_menu:
             surf = self.fitted(sp.text or " ", bar.w - 170, self.H * 0.085, WHITE)
             r = surf.get_rect(center=bar.center)
             if sp.text:
@@ -870,7 +1073,8 @@ class App:
             elif live and not flashing and int(order[0]) == i and margin > self.cfg["margin_tau"]:
                 pygame.draw.rect(self.screen, CYAN, rect.inflate(18, 18), 4, border_radius=32)   # "locking on"
             if self.args.input == "sim" and self.sim_target == i:
-                self.text("sim gaze", self.f_tiny, CYAN, (rect.centerx, rect.bottom + 14))
+                self.text("playing a recording of this light" if self.dataset else "sim gaze", self.f_tiny, CYAN,
+                          (rect.centerx, rect.bottom + 14))
 
     def option_surface(self, raw, w, h):
         """What is written on a box: the words on a dark plate (readable at every flicker
@@ -885,6 +1089,10 @@ class App:
         danger = "EMERGENCY" in main
         word = raw.startswith("★") and name not in SUBTITLES          # a predicted word
         sub = ("adds a space" if "␣" in raw else "finish the word") if word else SUBTITLES.get(name, "")
+        if name.startswith("VOICE:"):
+            sub = "look here to change the language"
+        if name == "COME HERE" and self.alert.enabled:
+            sub = "bell + alerts their phone"
         color = (176, 180, 200) if nav else WHITE
         px = self.H * (0.046 if nav else 0.066)
         text = self.fitted(main, w - 84, px, color)
@@ -935,7 +1143,9 @@ class App:
         tw, th, gap = int(m.w * 0.40), int(self.H * 0.085), int(m.w * 0.06)
         x0, y0 = m.centerx - tw - gap // 2, int(self.H * 0.615)
         fresh = now - self.scores_t < 1.5
-        best = int(np.argmax(self.scores)) if fresh else -1
+        order = np.argsort(self.scores)[::-1]                # highlight a winner only when it clearly leads:
+        clear = fresh and self.scores[order[0]] - self.scores[order[1]] > self.cfg["margin_tau"]
+        best = int(order[0]) if clear else -1               # at rest the lead keeps changing and means nothing
         for i in range(4):
             r = pygame.Rect(x0 + (i % 2) * (tw + gap), y0 + (i // 2) * (th + gap), tw, th)
             pygame.draw.rect(self.screen, PANEL, r, border_radius=10)
@@ -986,6 +1196,16 @@ class App:
                 self.screen.blit(*self._centered(self.fitted(self.clean("✓ " + self.flash[2].lstrip("★* ")), m.w,
                                                              self.H * 0.05, GREEN), m.centerx, y + self.H * 0.06))
             self.draw_page_dots(m.centerx, int(self.H * 0.59))
+            source = ("recorded" if self.dataset else "simulated") + " brain signals"
+            if self.auto and not self.auto_say:
+                self.paragraph(f"AUTO DEMO: typing \"{self.auto}\" from {source}  (A = manual)", self.f_tiny, CYAN,
+                               m.centerx, self.H * 0.50, m.w)
+            elif self.auto_say:
+                self.paragraph(f"AUTO DEMO: saying {len(self.auto_say)} more need(s) from {source}  (A = manual)",
+                               self.f_tiny, CYAN, m.centerx, self.H * 0.50, m.w)
+            elif self.args.input == "sim":
+                self.paragraph("Manual: 1-4 choose the box to look at.  A = automatic demo", self.f_tiny, DIM,
+                               m.centerx, self.H * 0.50, m.w)
             if sp.screen == "say":                           # Gemini's fuller sentence, for the person to judge
                 better = sp.expanded
                 if better:
@@ -995,6 +1215,9 @@ class App:
                                    y + self.H * 0.03, m.w)
             elif sp.screen == "asked" and self.ask_wait[0]:
                 self.paragraph("Gemini is finding answers...", self.f_tiny, DIM, m.centerx, y + self.H * 0.03, m.w)
+            self.sync_alert()
+            if self.alert_note[0] and now - self.alert_note[2] < 12:
+                self.paragraph(self.alert_note[0], self.f_tiny, self.alert_note[1], m.centerx, self.H * 0.545, m.w)
         if self.from_clf:
             self.draw_signal(now)
         status, color = self.link_status(now)
@@ -1009,6 +1232,9 @@ class App:
         if now - self.alarm_said > 6.0:
             self.alarm_said = now
             self.say(self.spoken[0] or "Emergency! I need help right now.")
+        if self.alarm_calls < 5 and now - self.alarm_t0 > 60 * self.alarm_calls:   # nobody came: call again,
+            self.alarm_calls += 1                                                  # once a minute, 5 times at most
+            self.phone_alert(now, urgent=True)
         pulse = 0.5 + 0.5 * np.sin(2 * np.pi * 1.0 * (now - self.alarm_t0))       # slow 1 Hz pulse
         panel = pygame.Rect(int(self.W * 0.04), int(self.H * 0.24), int(self.W * 0.92), int(self.H * 0.68))
         pygame.draw.rect(self.screen, (int(120 + 110 * pulse), 18, 24), panel, border_radius=30)
@@ -1018,6 +1244,10 @@ class App:
         self.screen.blit(surf, surf.get_rect(center=(cx, int(panel.y + panel.h * 0.28))))
         self.text("I NEED HELP RIGHT NOW", self.f_big, WHITE, (cx, panel.y + panel.h * 0.55))
         self.text(f"calling for {int(now - self.alarm_t0)} s", self.f_small, WHITE, (cx, panel.y + panel.h * 0.70))
+        if self.alert.enabled:
+            self.sync_alert()
+            self.text(self.alert_note[0] or f"Phone alert: {self.alert.describe()}", self.f_small, WHITE,
+                      (cx, panel.y + panel.h * 0.775))
         self.text("Helper: press SPACE when you are with the person", self.f_mid, YELLOW,
                   (cx, panel.y + panel.h * 0.86))
 
@@ -1035,7 +1265,7 @@ class App:
         self.screen.blit(t, t.get_rect(midleft=(x, r.y + r.h * 0.36)))
         b = self.f_tiny.render(blurb, True, MUTED if active else DIM)
         self.screen.blit(b, b.get_rect(midleft=(x, r.y + r.h * 0.70)))
-        self.click_zones.append((r, lambda m=title.lower(): self.speller.set_mode(m)))
+        self.click_zones.append((r, lambda m=title.lower(): self.choose_preset(m)))
 
     def language_picker(self, center):
         """Start screen: which language the voice speaks. Arrow keys, F5 or a click change it."""
@@ -1075,18 +1305,21 @@ class App:
                                  if self.hero else
                                  ["You choose letters with your eyes - your brainwaves tell the computer which one."]):
             self.text(line, self.f_small, MUTED, (cx, H * 0.325 - 1.7 * up + i * H * 0.036))
-        patient = self.speller.mode == "patient"
+        patient, postcard = self.preset == "patient", self.preset == "postcard"
         dx, top = W * 0.152, H * 0.445
         if self.hero:                                           # narrower column: cards under each other
-            self.mode_card("F1", "Postcard", "Spell a message, take home the art", (cx, H * 0.375), not patient, YELLOW)
+            self.mode_card("F1", "Postcard", "Spell a message, take home the art", (cx, H * 0.375), postcard, YELLOW)
             self.mode_card("F2", "Patient", "Speak a need with a single look", (cx, H * 0.512), patient, CYAN)
         else:
-            self.mode_card("F1", "Postcard", "Spell a message, take home the art", (cx - dx, top), not patient, YELLOW)
+            self.mode_card("F1", "Postcard", "Spell a message, take home the art", (cx - dx, top), postcard, YELLOW)
             self.mode_card("F2", "Patient", "Speak a need with a single look", (cx + dx, top), patient, CYAN)
 
         field = pygame.Rect(0, 0, int(W * 0.42), int(H * 0.088))
         field.center = (cx, int(H * (0.635 if self.hero else 0.585)))
-        self.card(field, 20, glow=CYAN if patient else YELLOW)
+        if not self.preset:
+            self.text("No mode picked here: the person chooses postcard or patient, and the language, by looking",
+                      self.f_tiny, GREEN, (cx, field.y - H * 0.021))
+        self.card(field, 20, glow=CYAN if patient else YELLOW if postcard else None)
         if self.nickname:
             surf = self.f_big.render(self.nickname, True, WHITE)
             r = surf.get_rect(center=field.center)
@@ -1106,12 +1339,15 @@ class App:
         status, color = self.link_status(now)
         rows = [(status, color), (f"Word prediction: {self.predictor.describe()}",
                                   AMBER if self.predictor.source == "built-in" else GREEN)]
-        if patient and self.cfg.get("use_llm"):
+        if not postcard and self.cfg.get("use_llm"):
             rows.append(("Gemini: Q = suggested answers" + (", fuller sentences after DONE" if self.speller.assistant
                          else "") if self.assistant.enabled else
                          "Gemini is on in config.yaml but GEMINI_API_KEY is not set in this window",
                          GREEN if self.assistant.enabled else AMBER))
-        if patient:
+        if not postcard:
+            rows.append((f"Phone alerts on COME HERE and EMERGENCY: {self.alert.describe()}",
+                         GREEN if self.alert.enabled else MUTED))
+        if not postcard:
             rows.append(("Two-box easy mode is ON: one choice at a time (F4 = off)" if self.speller.easy else
                          "Weak signal? F4 = two-box easy mode", CYAN if self.speller.easy else GREEN))
         if self.cfg.get("use_llm") and not self.predictor.use_llm:
@@ -1152,6 +1388,7 @@ class App:
                 ("ENTER", "start"),
                 ("While typing", ""), ("1 2 3 4", "pick a box, or click it (keyboard and sim modes)"),
                 ("P", "pause / continue"), ("T", "accuracy test: look at the red box"),
+                ("A", "automatic demo on / off (sim and dataset replay)"),
                 ("Q", "you asked a question: type it, get answer boxes (patient)"),
                 ("R  /  L", "say the last phrase again  /  next spoken language"),
                 ("SPACE", "acknowledge an emergency alarm"), ("ESC", "back to the start screen"),
@@ -1186,7 +1423,9 @@ class App:
         self.screen.blit(self.f_big.render(dots, True, PINK), (r.right + 6, r.y))
         surf = self.fitted(f"\"{self.message}\"", self.W * 0.8, self.H * 0.07, WHITE)
         self.screen.blit(surf, surf.get_rect(center=(cx, int(self.H * 0.65))))
-        note = ("Every postcard is drawn from the EEG recorded while you typed" if self.from_clf
+        note = ("This postcard is drawn from the recorded EEG that was just decoded" if self.dataset else
+                "This postcard is drawn from the simulated EEG" if self.args.input == "sim" else
+                "Every postcard is drawn from the EEG recorded while you typed" if self.from_clf
                 else "Keyboard demo: no EEG was recorded, so this art comes from random noise")
         self.text(note, self.f_small, MUTED, (cx, self.H * 0.74))
 
@@ -1207,7 +1446,9 @@ class App:
             self.text("Scan to find your postcard", self.f_small, WHITE, (q.centerx, q.bottom + 34))
 
         who = f"{self.nickname} typed" if self.nickname else "Typed"
-        how = "using only brain signals" if self.from_clf else "in keyboard demo mode"
+        how = ("in keyboard demo mode" if not self.from_clf else
+               "decoded from recorded brain signals (dataset replay)" if self.dataset else
+               "with simulated brain signals" if self.args.input == "sim" else "using only brain signals")
         line = self.fitted(f"{who} \"{self.message}\" {how}", W * 0.9, H * 0.04, WHITE)
         self.screen.blit(line, line.get_rect(center=(W // 2, int(H * 0.655))))
         letters = len(self.message.replace(" ", ""))
@@ -1288,6 +1529,7 @@ class App:
             if self.from_clf:
                 self.poll_classifier(now)
             self.poll_assistant(now)
+            self.auto_step(now)
             if self.state == "making":
                 self.update_making(now)
             self.screen.blit(self.bg_calm if self.state == "spell" else self.bg, (0, 0))
@@ -1316,6 +1558,6 @@ if __name__ == "__main__":
     ap.add_argument("--display", type=int, default=0, help="monitor number for fullscreen (0 = main)")
     ap.add_argument("--mute", action="store_true", help="no feedback sounds")
     ap.add_argument("--signal", choices=["live", "replay"], default="live",
-                    help="what feeds the classifier: the headset (live) or replay_stream.py (replay); "
-                         "printed on the postcard")
+                    help="what feeds the classifier: the headset (live) or a recording (replay). With "
+                         "--input sim, replay means dataset_stream.py: keys 1-4 play real recorded EEG")
     App(ap.parse_args()).run()
