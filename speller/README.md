@@ -77,10 +77,11 @@ Arabic, Chinese, Japanese or Tamil. **F5** on the start screen (or **L** while t
 
 ## Not done yet
 
-- **Voice is silent with the current `voice/tts.py`**: it only speaks after an explicit user
-  confirmation (`approved=True`, see `docs/PART_C_IMPLEMENTATION.md`). The speller does not have
-  that confirmation step yet, so it does not claim approval. The emergency siren, call bell and
-  on-screen text work regardless.
+- **No separate confirmation step.** `voice/tts.py` asks callers to state that a message was
+  approved and that cloud voice is allowed. The speller states both on every box pick: the pick
+  is treated as the person's approval, and `use_tts: true` as consent to send the text to
+  ElevenLabs. With a live headset a misread look is therefore spoken at once (THAT WAS WRONG
+  takes it back). Spelled sentences do get a say-it page when `llm_in_patient_mode` is on.
 - Keyboard mode records no EEG, so no postcard art is made there.
 - Not yet tested with a live headset.
 

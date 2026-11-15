@@ -216,11 +216,15 @@ class App:
                 self.said_in = (name if sentence != text else "English (no translation available)",
                                 sentence if sentence != text else "", time.time())
             voice, on = self.voice_id(), self.cfg.get("use_tts", False)
+            # Team decision (Part B): picking a box IS the person's approval to say it, and switching
+            # use_tts on is the operator's consent to send the text to ElevenLabs. The newer
+            # voice/tts.py asks for both explicitly; the older one takes no such arguments.
+            ok = {"approved": True, "allow_cloud": True} if "approved" in inspect.signature(speak).parameters else {}
             if on and code in V3_LANGS:                      # this language needs the slower Eleven v3 model:
-                threading.Thread(target=lambda: (prefetch(sentence, code, voice), speak(sentence, voice, on)),
+                threading.Thread(target=lambda: (prefetch(sentence, code, voice), speak(sentence, voice, on, **ok)),
                                  daemon=True).start()        # fetch its audio first, off the UI thread
             else:
-                speak(sentence, voice, on)
+                speak(sentence, voice, on, **ok)
 
         self.translator.translate(text, code, out)
 
@@ -1112,9 +1116,6 @@ class App:
                          "Weak signal? F4 = two-box easy mode", CYAN if self.speller.easy else GREEN))
         if self.cfg.get("use_llm") and not self.predictor.use_llm:
             rows.append(("Gemini is on in config.yaml but GEMINI_API_KEY is not set - local words only", AMBER))
-        if self.cfg.get("use_tts") and "approved" in inspect.signature(speak).parameters:
-            rows.append(("Voice is silent: voice/tts.py now needs a confirmation step (docs/PART_C_IMPLEMENTATION.md)",
-                         AMBER))
         if self.cfg.get("use_tts") and not os.environ.get("ELEVENLABS_API_KEY"):
             rows.append(("ElevenLabs key not found in this window: new sentences use the computer's built-in "
                          "voice (open a new terminal)", AMBER))
