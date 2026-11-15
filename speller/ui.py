@@ -22,6 +22,7 @@ Operator keys:
 import argparse
 import csv
 import inspect
+import json
 import os
 import pathlib
 import random
@@ -36,11 +37,12 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from art.postcard import make_postcard  # noqa: E402
 from common import ROOT, UDPReceiver, UDPSender, load_config  # noqa: E402
 from speller.assistant import Assistant  # noqa: E402
+from speller.care_sync import CareSync  # noqa: E402
 from speller.languages import LANGUAGES, V3_LANGS, Translator, prefetch  # noqa: E402
 from speller.notify import PhoneAlert  # noqa: E402
 from speller.predictor import Predictor  # noqa: E402
 from speller.sounds import SoundBank  # noqa: E402
-from speller.state_machine import SCREENS, Speller, load_phrases  # noqa: E402
+from speller.state_machine import SCREENS, TYPING_NOTICE, Speller, load_phrases  # noqa: E402
 from upload.base44_upload import upload  # noqa: E402
 from voice.tts import speak  # noqa: E402
 
@@ -57,8 +59,8 @@ BG = (9, 10, 16)
 PANEL = (22, 24, 36)
 LINE = (52, 56, 78)
 WHITE = (245, 246, 250)
-MUTED = (150, 154, 176)
-DIM = (96, 100, 122)
+MUTED = (172, 176, 198)                         # secondary text: about 9:1 against the background
+DIM = (128, 132, 156)                           # quiet hints: still above 5:1, readable from a distance
 YELLOW = (255, 214, 10)
 GREEN = (40, 230, 130)
 CYAN = (70, 200, 255)
@@ -98,12 +100,17 @@ class App:
         self.sym_name = next((n for n in ("segoeuisymbol", "dejavusans", "applesymbols", "notosanssymbols2",
                                           "symbola", "arialunicodems") if pygame.font.match_font(n)), None)
         self._fonts, self._glyphs, self._surfs = {}, {}, {}
+        # Windows hands out Segoe UI *Light* when a non-bold Segoe UI is asked for: thin strokes that
+        # are hard to read at small sizes from a distance. Use the Regular file for all small text.
+        heavy = pygame.font.match_font(self.font_name, bold=True) if self.font_name == "segoeui" else None
+        regular = pathlib.Path(heavy).with_name("segoeui.ttf") if heavy else None
+        self.regular_path = str(regular) if regular and regular.exists() else None
         H = self.H
         self.f_title = self.font(H * 0.10)
         self.f_big = self.font(H * 0.085)
         self.f_mid = self.font(H * 0.042)
-        self.f_small = self.font(H * 0.028, bold=False)
-        self.f_tiny = self.font(H * 0.021, bold=False)
+        self.f_small = self.font(H * 0.029, bold=False)
+        self.f_tiny = self.font(H * 0.0225, bold=False)
 
         self.predictor = Predictor(use_llm=self.cfg.get("use_llm", False))
         self.predictor.llm_patient = bool(self.cfg.get("llm_in_patient_mode", False))   # default: postcards only
@@ -122,7 +129,7 @@ class App:
         self.sounds = SoundBank(enabled=not args.mute)
 
         # Four big stimulus boxes in the corners, far apart; text and feedback live in the middle column.
-        bw, bh = int(self.W * 0.31), int(self.H * 0.28)
+        bw, bh = int(self.W * 0.335), int(self.H * 0.325)
         xs, ys = (0.195 * self.W, 0.805 * self.W), (0.40 * self.H, 0.78 * self.H)
         self.boxes = [pygame.Rect(0, 0, bw, bh) for _ in range(4)]
         for r, (x, y) in zip(self.boxes, [(xs[0], ys[0]), (xs[1], ys[0]), (xs[0], ys[1]), (xs[1], ys[1])]):
@@ -155,6 +162,14 @@ class App:
             self.speller.assistant = self.assistant
         self.translator = Translator(self.assistant)
         self.alert = PhoneAlert()                   # call / text / push to a caregiver who is not in the room
+        self.care = CareSync(self.cfg)              # caregiver web app: live feed of what is said, replies back
+        self.live_t, self.live_trail, self.live_pick = 0.0, [], ("", 0, 0.0)   # web dashboard feed
+        # gentler flicker: how far the brightness swings (1 = black to white), and the still time after a pick
+        self.contrast = max(0.05, min(1.0, float(self.cfg.get("flicker_contrast", 0.3))))
+        self.bright = max(0.15, min(0.5, float(self.cfg.get("flicker_brightness", 0.36))))   # the middle grey
+        self.rest_s = max(0.0, float(self.cfg.get("flicker_rest_s", 1.5)))
+        self.still_t = 0.0
+        self.care_msg = ("", 0.0)                 # latest reply from a caregiver, shown on the patient's screen
         self.alert_note = ("", GREEN, 0.0)          # what to show about the last phone alert
         self.alert_t, self.alarm_calls = 0.0, 0     # last COME HERE alert; alerts sent for this alarm
         # --input sim --signal replay: acquisition/dataset_stream.py plays real recorded EEG (g.tec dataset)
@@ -204,7 +219,10 @@ class App:
         except Exception:
             sizes = [(1280, 800)]
         disp = a.display if 0 <= a.display < len(sizes) else 0
-        size = (1280, 800) if a.windowed else sizes[disp]
+        # A window must fit this screen with its title bar and the taskbar: a fixed 1280 x 800 is taller
+        # than many laptop screens (1366 x 768, or 1920 x 1080 shown at 150%), so size it from the desktop.
+        size = (int(sizes[disp][0] * 0.94), int(sizes[disp][1] * 0.85)) if a.windowed else sizes[disp]
+        os.environ.setdefault("SDL_VIDEO_CENTERED", "1")
         flags = pygame.SCALED | (0 if a.windowed else pygame.FULLSCREEN)
         self.vsync = True
         try:
@@ -404,6 +422,8 @@ class App:
     # ---------------------------------------------------------------- text rendering
     def font(self, px, bold=True, symbol=False):
         key = (max(10, int(px)), bold, symbol)
+        if key not in self._fonts and not bold and not symbol and self.regular_path:
+            self._fonts[key] = pygame.font.Font(self.regular_path, key[0])     # true Regular, not Light
         if key not in self._fonts:
             self._fonts[key] = pygame.font.SysFont(self.sym_name if symbol else self.font_name, key[0], bold=bold)
         return self._fonts[key]
@@ -573,6 +593,9 @@ class App:
             self.spoken = (self.speller.spoken, now)
             self.say(self.speller.spoken)
             self.write_log(now, "spoken", screen, text=self.speller.spoken)     # for speller/care_report.py
+            if self.speller.spoken != TYPING_NOTICE:     # the caregiver app shows what was said, as it is said
+                self.care.say(self.speller.spoken, "emergency" if self.speller.alarm else
+                              "spelled" if kind in ("done", "say") else "need", self.nickname)
             self.speller.spoken = None
         if self.speller.language != LANGUAGES[self.lang_i][0]:      # the person picked a language by looking
             self.lang_i = [c for c, _ in LANGUAGES].index(self.speller.language)
@@ -751,6 +774,61 @@ class App:
             self.sim_target, self.auto_t = box, now
             self.to_sim.send({"target": box})
 
+    def poll_care(self, now):
+        """Replies from the caregiver app: show and speak them; "I'm coming" stops the alarm."""
+        for text in self.care.take_replies():
+            self.care_msg = (text, now)
+            self.sounds.play("type")
+            self.say(text)
+            self.write_log(now, "caregiver_reply", text=text)
+        if self.speller.alarm and self.care.emergency_answered():
+            self.stop_alarm(now)
+            self.care_msg = ("Your caregiver saw the alarm and is coming", now)
+            self.say("Your caregiver is coming.")
+
+    def push_live(self, now):
+        """Feed the web dashboard: what the decoder sees and what the system is doing right now.
+        Scores and state only (never raw EEG), sampled five times a second; care_sync sends the newest."""
+        if not self.care.live_on or now - self.live_t < 0.2:
+            return
+        self.live_t = now
+        fresh = self.from_clf is not None and now - self.scores_t < 1.5 and not self.paused
+        scores = [round(max(0.0, min(1.0, float(s))), 3) if fresh else 0.0 for s in self.scores]
+        self.live_trail = (self.live_trail + [scores])[-40:]             # the last 8 seconds
+        order = np.argsort(scores)[::-1]
+        margin = float(scores[order[0]] - scores[order[1]])
+        tau = float(self.cfg["margin_tau"])
+        lead = int(order[0]) if fresh and margin > tau else -1
+        speaking = bool(self.spoken[0]) and now - self.spoken[1] < 3.5
+        if self.speller.alarm:
+            state = "emergency"
+        elif self.paused:
+            state = "paused"
+        elif speaking:
+            state = "speaking"
+        elif self.state != "spell":
+            state = "idle"
+        elif now - self.flash[1] < 1.0 and self.flash[0] >= 0:
+            state = "selected"
+        else:
+            state = "detecting" if fresh else "waiting"
+        if self.flash[0] >= 0 and self.flash[1] != self.live_pick[2]:   # a new pick: remember it for the page
+            self.live_pick = (self.flash[2], float(self.cfg["freqs"][self.flash[0]]), self.flash[1])
+        self.care.live({
+            "state": state, "mode": self.speller.mode,
+            "source": ("Keyboard (no EEG)" if self.args.input == "keyboard" else
+                       "Recorded human EEG (dataset replay)" if self.dataset else
+                       "Simulated EEG" if self.args.input == "sim" else "Live EEG headset"),
+            "freqs": [float(f) for f in self.cfg["freqs"]], "scores": scores,
+            "labels": [self.clean(lab or "") for lab in self.speller.labels()] if self.state == "spell" else ["", "", "", ""],
+            "detected_hz": float(self.cfg["freqs"][lead]) if lead >= 0 else 0,
+            "confidence": round(margin, 3), "threshold": tau,
+            "trail": json.dumps(self.live_trail),
+            "speaking_text": self.spoken[0] if speaking else "",
+            "last_pick": self.live_pick[0], "last_pick_hz": self.live_pick[1],
+            "last_pick_at": int(self.live_pick[2] * 1000),
+        })
+
     def sync_alert(self):
         """Pick up the outcome of the last phone alert (it is sent in the background)."""
         if self.alert.last[0] and self.alert.last[2] > self.alert_note[2]:
@@ -764,7 +842,7 @@ class App:
         if not self.alert.enabled:
             return
         if (self.auto or self.auto_say) and not self.cfg.get("alert_in_demo", False):
-            self.alert_note = ("Phone alert skipped (automatic demo)", MUTED, now)
+            self.alert_note = ("Phone alert skipped", MUTED, now)
             return
         if not urgent and now - self.alert_t < 30:           # a second look within 30 s does not call again
             return
@@ -828,12 +906,22 @@ class App:
                                              self.session_secs, consent=self.consent) if self.postcard else ""
                 except Exception as ex:
                     self.upload_msg = f"upload failed: {ex}"
+                if self.consent and self.postcard and self.care.enabled:   # the visitor said yes: public gallery
+                    self.care.postcard(self.postcard, self.message, self.nickname, self.session_secs)
+                    self.upload_msg = "Sent to the online gallery"
             elif k == pygame.K_SPACE:
                 self.to_intro()
         elif self.state == "spell":
             if k == pygame.K_p:
                 self.paused = not self.paused
                 self.to_clf.send({"cmd": "pause" if self.paused else "resume"})
+                if self.paused:                                  # everything stops: no look, no moving signal bars
+                    self.scores = [0.0, 0.0, 0.0, 0.0]
+                    if self.args.input == "sim":
+                        self.sim_target = -1
+                        self.to_sim.send({"target": -1})
+                else:
+                    self.last_sel_t = time.time()                # (the automatic demo waits a moment, then goes on)
             elif k == pygame.K_q and self.speller.mode == "patient":
                 if self.assistant.enabled and not self.speller.easy:
                     self.asking = ""                             # type the question: Gemini suggests answers
@@ -1003,7 +1091,8 @@ class App:
     def draw_header(self, now):
         fps = self.clock.get_fps()
         bad = self.frame > 120 and abs(fps - self.refresh) > 2
-        self.screen.blit(self.f_tiny.render(f"{fps:5.1f} fps", True, RED if bad else DIM), (12, 8))
+        if bad or self.help:                        # a technical number: only shown when it matters
+            self.screen.blit(self.f_tiny.render(f"{fps:5.1f} fps", True, RED if bad else DIM), (12, 8))
         if self.lang_i:
             self.screen.blit(self.f_tiny.render(f"speaks {LANGUAGES[self.lang_i][1]}", True, CYAN), (110, 8))
         if self.speller.mode == "patient":
@@ -1021,9 +1110,12 @@ class App:
             r = surf.get_rect(center=bar.center)
             if sp.text:
                 self.screen.blit(surf, r)
-            else:
-                r.width = 0
-                r.centerx = bar.centerx
+            else:                                               # empty: say what this bar is for
+                ghost = self.f_mid.render("Your message appears here" if sp.mode == "postcard"
+                                          else "Your sentence appears here", True, (84, 88, 112))
+                r = ghost.get_rect(center=bar.center)
+                self.screen.blit(ghost, r)
+                r = pygame.Rect(r.x - 22, r.y, 0, r.h)          # caret in front of the placeholder
             if int(time.time() * 1.6) % 2 == 0:                 # slow caret blink (far from the flicker rates)
                 h = int(self.H * 0.062)
                 pygame.draw.rect(self.screen, CYAN, (r.right + 8, bar.centery - h // 2, 5, h), border_radius=2)
@@ -1040,8 +1132,19 @@ class App:
             self.text(sp.hint(), self.f_mid,
                       WHITE if sp.alarm else MUTED, bar.center)
 
+    def resting(self, now):
+        """Should the boxes hold still? The flicker runs only while a choice is being made: not for
+        a moment after each pick, not while a sentence is spoken, not during the alarm or a pause.
+        Less time under flicker is easier on the eyes and lowers the risk for light-sensitive people."""
+        return (self.paused or self.speller.alarm or now - self.last_sel_t < self.rest_s
+                or (bool(self.spoken[0]) and now - self.spoken[1] < 3.5))
+
     def draw_boxes(self, now):
         labels = self.speller.labels()
+        still = self.resting(now)
+        if still:
+            self.still_t = now
+        depth = self.contrast * min(1.0, (now - self.still_t) / 0.4)     # the flicker fades in, never snaps on
         t = self.frame / self.refresh                       # frame-indexed: exact flicker frequency
         order = np.argsort(self.scores)[::-1]
         live = self.from_clf is not None and now - self.scores_t < 1.0 and not self.paused
@@ -1060,7 +1163,9 @@ class App:
                                  border_radius=26 + grow // 2)
                 lab = self.flash[2] or lab
             else:
-                lum = 0.5 + 0.5 * np.sin(2 * np.pi * f * t) if not self.paused else 0.30
+                # brightness swings gently around a steady middle grey (flicker_contrast), not black to white
+                # and that middle grey is kept dim (flicker_brightness): large bright areas are what tire the eyes
+                lum = 0.30 if self.paused else max(0.0, self.bright + 0.5 * depth * np.sin(2 * np.pi * f * t))
                 g = int(30 + 225 * lum)
                 pygame.draw.rect(self.screen, (g, g, g), rect, border_radius=26)
             surf = self.option_surface(lab, rect.w, rect.h)
@@ -1094,7 +1199,7 @@ class App:
         if name == "COME HERE" and self.alert.enabled:
             sub = "bell + alerts their phone"
         color = (176, 180, 200) if nav else WHITE
-        px = self.H * (0.046 if nav else 0.066)
+        px = self.H * (0.052 if nav else 0.078)             # the word is what the eyes rest on: make it large
         text = self.fitted(main, w - 84, px, color)
         lines = [text]
         if len(main.split()) > 1 and text.get_height() < self.H * 0.05 and not nav:   # long: use two lines
@@ -1106,7 +1211,7 @@ class App:
         small = self.f_tiny.render(sub, True, (150, 200, 235) if word else (168, 172, 196)) if sub else None
         tw = max([t.get_width() for t in lines] + ([small.get_width()] if small else []))
         th = sum(t.get_height() for t in lines) + (small.get_height() + 2 if small else 0)
-        pad_x, pad_y = (26, 10) if nav else (34, 16)
+        pad_x, pad_y = (30, 12) if nav else (40, 18)
         plate = pygame.Rect(0, 0, min(w - 24, tw + 2 * pad_x), min(h - 20, th + 2 * pad_y))
         surf = pygame.Surface(plate.size, pygame.SRCALPHA)
         fill = (176, 24, 36) if danger else (26, 28, 42) if nav else (12, 13, 22)
@@ -1142,7 +1247,7 @@ class App:
         m = self.mid
         tw, th, gap = int(m.w * 0.40), int(self.H * 0.085), int(m.w * 0.06)
         x0, y0 = m.centerx - tw - gap // 2, int(self.H * 0.615)
-        fresh = now - self.scores_t < 1.5
+        fresh = now - self.scores_t < 1.5 and not self.paused
         order = np.argsort(self.scores)[::-1]                # highlight a winner only when it clearly leads:
         clear = fresh and self.scores[order[0]] - self.scores[order[1]] > self.cfg["margin_tau"]
         best = int(order[0]) if clear else -1               # at rest the lead keeps changing and means nothing
@@ -1155,7 +1260,7 @@ class App:
                 pygame.draw.rect(self.screen, GREEN if i == best else (44, 92, 128), fill, border_radius=10)
             pygame.draw.rect(self.screen, LINE, r, 2, border_radius=10)
             self.text(f"{self.cfg['freqs'][i]:g} Hz", self.f_tiny, WHITE if i == best else MUTED, r.center)
-        self.text("Live brain signal", self.f_tiny, DIM, (m.centerx, y0 - 16))
+        self.text("Live brain signal" + (" (paused)" if self.paused else ""), self.f_tiny, DIM, (m.centerx, y0 - 16))
 
     def draw_spell(self, now):
         sp, m = self.speller, self.mid
@@ -1196,16 +1301,8 @@ class App:
                 self.screen.blit(*self._centered(self.fitted(self.clean("✓ " + self.flash[2].lstrip("★* ")), m.w,
                                                              self.H * 0.05, GREEN), m.centerx, y + self.H * 0.06))
             self.draw_page_dots(m.centerx, int(self.H * 0.59))
-            source = ("recorded" if self.dataset else "simulated") + " brain signals"
-            if self.auto and not self.auto_say:
-                self.paragraph(f"AUTO DEMO: typing \"{self.auto}\" from {source}  (A = manual)", self.f_tiny, CYAN,
-                               m.centerx, self.H * 0.50, m.w)
-            elif self.auto_say:
-                self.paragraph(f"AUTO DEMO: saying {len(self.auto_say)} more need(s) from {source}  (A = manual)",
-                               self.f_tiny, CYAN, m.centerx, self.H * 0.50, m.w)
-            elif self.args.input == "sim":
-                self.paragraph("Manual: 1-4 choose the box to look at.  A = automatic demo", self.f_tiny, DIM,
-                               m.centerx, self.H * 0.50, m.w)
+            # (the automatic demo is not announced here and its sentence is never shown in advance:
+            #  the screen shows only what the decoder works out. The signal-source label stays.)
             if sp.screen == "say":                           # Gemini's fuller sentence, for the person to judge
                 better = sp.expanded
                 if better:
@@ -1215,17 +1312,24 @@ class App:
                                    y + self.H * 0.03, m.w)
             elif sp.screen == "asked" and self.ask_wait[0]:
                 self.paragraph("Gemini is finding answers...", self.f_tiny, DIM, m.centerx, y + self.H * 0.03, m.w)
+            if self.care_msg[0] and now - self.care_msg[1] < 20:        # a caregiver answered from their phone
+                self.paragraph("Caregiver: " + self.clean(self.care_msg[0]), self.f_mid, CYAN, m.centerx,
+                               self.H * 0.40, m.w)
             self.sync_alert()
             if self.alert_note[0] and now - self.alert_note[2] < 12:
                 self.paragraph(self.alert_note[0], self.f_tiny, self.alert_note[1], m.centerx, self.H * 0.545, m.w)
         if self.from_clf:
             self.draw_signal(now)
         status, color = self.link_status(now)
+        status = {"KEYBOARD DEMO MODE - not using EEG": "Keyboard demo - no EEG",          # short forms that
+                  "Recorded human EEG (SSVEP dataset replay) - decoded live": "Recorded human EEG - decoded live",
+                  "Simulated EEG - classifier live": "Simulated EEG - decoded live",        # fit the column
+                  "Waiting for classifier (start classifier_node.py)": "Waiting for the classifier"}.get(status, status)
         self.chip(status, color, (m.centerx, self.H * 0.875))
         keys = "TAB all keys   -   ESC exit"                 # (the full list lives on the TAB card)
         if self.args.input != "eeg":
             keys = "1 2 3 4 or click to pick   -   " + keys
-        self.text(keys, self.f_tiny, DIM, (m.centerx, self.H * 0.955))
+        self.text(keys, self.f_tiny, DIM, (m.centerx, self.H * 0.975))      # clear of the boxes above
 
     def draw_alarm(self, now):
         """Full-width red alert. It stays (siren + repeated voice) until a helper presses SPACE."""
@@ -1308,11 +1412,11 @@ class App:
         patient, postcard = self.preset == "patient", self.preset == "postcard"
         dx, top = W * 0.152, H * 0.445
         if self.hero:                                           # narrower column: cards under each other
-            self.mode_card("F1", "Postcard", "Spell a message, take home the art", (cx, H * 0.375), postcard, YELLOW)
-            self.mode_card("F2", "Patient", "Speak a need with a single look", (cx, H * 0.512), patient, CYAN)
+            self.mode_card("F1", "Postcard", "Spell a message, keep the art", (cx, H * 0.375), postcard, YELLOW)
+            self.mode_card("F2", "Patient", "Say a need with one look", (cx, H * 0.512), patient, CYAN)
         else:
-            self.mode_card("F1", "Postcard", "Spell a message, take home the art", (cx - dx, top), postcard, YELLOW)
-            self.mode_card("F2", "Patient", "Speak a need with a single look", (cx + dx, top), patient, CYAN)
+            self.mode_card("F1", "Postcard", "Spell a message, keep the art", (cx - dx, top), postcard, YELLOW)
+            self.mode_card("F2", "Patient", "Say a need with one look", (cx + dx, top), patient, CYAN)
 
         field = pygame.Rect(0, 0, int(W * 0.42), int(H * 0.088))
         field.center = (cx, int(H * (0.635 if self.hero else 0.585)))
@@ -1321,7 +1425,7 @@ class App:
                       self.f_tiny, GREEN, (cx, field.y - H * 0.021))
         self.card(field, 20, glow=CYAN if patient else YELLOW if postcard else None)
         if self.nickname:
-            surf = self.f_big.render(self.nickname, True, WHITE)
+            surf = self.fitted(self.nickname, field.w - 60, field.h * 0.62, WHITE)   # always inside the field
             r = surf.get_rect(center=field.center)
             self.screen.blit(surf, r)
             if int(now * 2) % 2 == 0:
@@ -1344,6 +1448,10 @@ class App:
                          else "") if self.assistant.enabled else
                          "Gemini is on in config.yaml but GEMINI_API_KEY is not set in this window",
                          GREEN if self.assistant.enabled else AMBER))
+        if self.care.enabled or self.cfg.get("care_app_url"):
+            rows.append(("Caregiver app: " + ("connected" if self.care.enabled and not self.care.last_error else
+                         "NOT connected (" + (self.care.last_error or "BASE44_TOKEN is not set") + ")"),
+                         GREEN if self.care.enabled and not self.care.last_error else AMBER))
         if not postcard:
             rows.append((f"Phone alerts on COME HERE and EMERGENCY: {self.alert.describe()}",
                          GREEN if self.alert.enabled else MUTED))
@@ -1485,8 +1593,9 @@ class App:
         for m in self.from_clf.poll():
             kind = m.get("type")
             if kind == "scores" and len(m.get("scores", [])) == 4:
-                self.scores, self.scores_t = m["scores"], now
-            elif kind == "select":
+                if not self.paused:                              # paused: the display stays still
+                    self.scores, self.scores_t = m["scores"], now
+            elif kind == "select" and now - self.last_sel_t >= self.rest_s:   # boxes were still: not a real look
                 self.on_select(int(m.get("box", -1)), m.get("confidence", 0))
             elif kind == "session_saved" and self.state == "making":
                 self.saved_path = m.get("path")
@@ -1529,7 +1638,9 @@ class App:
             if self.from_clf:
                 self.poll_classifier(now)
             self.poll_assistant(now)
+            self.poll_care(now)
             self.auto_step(now)
+            self.push_live(now)
             if self.state == "making":
                 self.update_making(now)
             self.screen.blit(self.bg_calm if self.state == "spell" else self.bg, (0, 0))

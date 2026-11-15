@@ -29,7 +29,9 @@ max_postcard_chars: 12
 gallery_url: "https://YOUR-GALLERY-LINK"   # Base44 gallery (or your custom domain)
 use_llm: true                  # Gemini word prediction (needs GEMINI_API_KEY)
 use_tts: true                  # ElevenLabs voice (needs ELEVENLABS_API_KEY)
-alert_in_demo: false           # true = the automatic demo also alerts the phone (only for recording a video)
+care_app_url: "https://gaze-link-care.base44.app"   # caregiver web app (Base44); needs BASE44_TOKEN
+care_app_id: "6af968a0535f941a55ceaf31"
+alert_in_demo: false            # automatic demo also alerts the phone (for recording a video; false for a booth)
 elevenlabs_voice_id: "EXAVITQu4vr4xnSDxMaL"   # ElevenLabs premade voice "Sarah"
 
 # --- Local UDP ports (all on 127.0.0.1) ---

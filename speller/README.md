@@ -83,6 +83,17 @@ switched on by environment variables; see the top of `speller/notify.py`. Nothin
 none is set, and never during the automatic demo. An unanswered EMERGENCY alerts again once a
 minute, five times at most. Test: `python speller/notify.py "Test: I need you"`.
 
+## Caregiver web app on Base44 (`speller/care_sync.py`)
+
+With `care_app_url` + `care_app_id` in `config.yaml` and a `BASE44_TOKEN` environment variable:
+
+- every spoken need, spelled sentence and emergency appears on the app's live feed;
+- a caregiver's reply in the app is shown and spoken on the patient's screen;
+- tapping "I'm coming" on an emergency (acknowledged) stops the alarm;
+- a postcard the visitor agreed to share (Y) is uploaded to the app's public gallery.
+
+Check the connection: `python speller/care_sync.py`. The token is a secret; never commit it.
+
 ## Not done yet
 
 - **No separate confirmation step.** `voice/tts.py` asks callers to state that a message was
@@ -94,3 +105,19 @@ minute, five times at most. Test: `python speller/notify.py "Test: I need you"`.
 - Not yet tested with a live headset.
 
 Safety: the boxes flash at 7-13 Hz. Not for anyone with photosensitive epilepsy.
+
+## Live EEG dashboard (web)
+
+With the caregiver app set up, the speller also writes one `LiveStatus` record about once a second:
+state (detecting / selected / speaking / paused / emergency), the four frequencies and their scores,
+the detected frequency, confidence and threshold, the last pick. Decoder scores only, never raw EEG.
+The Base44 app needs a `LiveStatus` entity and a page that reads it; until then nothing is sent.
+Switch it off with `live_dashboard: false` in `config.yaml`.
+
+## Gentler flicker
+
+The boxes pulse around a dim middle grey instead of black to white, hold still for a moment after
+each pick, while a sentence is spoken, during the alarm and when paused, and fade back in.
+Optional `config.yaml` keys: `flicker_contrast` (default 0.3, 1.0 = black to white),
+`flicker_brightness` (default 0.36), `flicker_rest_s` (default 1.5). This lowers the risk for
+light-sensitive people; it does not remove it. Test accuracy on the real headset before relying on it.
