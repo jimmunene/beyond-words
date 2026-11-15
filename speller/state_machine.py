@@ -152,7 +152,7 @@ HINTS = {
     "my1": "Pick something to say", "my2": "Pick something to say",
     "answer": "Answer the question",
 }
-MENUS = ("needs", "pain", "talk", "my", "answer", "body", "rest", "easy")          # screens that are not part of spelling
+MENUS = ("needs", "pain", "talk", "my", "answer", "body", "rest", "easy", "asked", "say")          # screens that are not part of spelling
 GROUP_LETTERS = {"AI": "ABCDEFGHI", "JR": "JKLMNOPQR"}     # letter-group pages that can offer a word
 
 
@@ -185,6 +185,9 @@ class Speller:
         self.group_words = group_words
         self.easy = easy                        # patient mode with two boxes only (weak signal)
         self.easy_list, self.easy_i = easy_options(self.screens), 0
+        self.assistant = None                   # speller.assistant.Assistant: offers a fuller sentence (optional)
+        self.question = ""                      # what the helper asked (shown while answering)
+        self.say_text = ""                      # spelled sentence waiting on the "say it?" page
         self.chime = False                      # the phrase just picked wants the call bell (UI plays it)
         self.last_spoken = ""
         self.set_mode(mode)
@@ -248,10 +251,24 @@ class Speller:
             self._group_words[key] = found
         return self._group_words[key]
 
-    def ask(self):
-        """A helper asked a yes/no question (patient mode): show YES / NO / NOT SURE."""
+    @property
+    def expanded(self):
+        """Gemini's fuller version of the spelled words: a sentence, None (waiting) or False (none)."""
+        if self.screen != "say" or not self.assistant:
+            return False
+        return self.assistant.get("expand", self.text)
+
+    def ask(self, question="", options=None):
+        """A helper asked a question (patient mode). Without options: YES / NO / NOT SURE.
+        options=[] shows an empty page while suggestions are fetched; options=[...] shows up to
+        three suggested answers as one-look boxes."""
         if self.mode == "patient" and not self.alarm:
-            self.screen, self.stack = "answer", []
+            self.screen, self.stack, self.question = "answer", [], question.strip()
+            if options is not None and not self.easy:
+                picks = [(o, ("phrase", o.capitalize() + ".")) for o in options[:3]]
+                last = None if not picks else ("SOMETHING ELSE", ("needs",)) if any(o in ("YES", "NO") for o in options)                     else ("YES / NO ▶", ("goto", "answer"))
+                self.screens["asked"] = picks + [None] * (3 - len(picks)) + [last]
+                self.screen = "asked"
             if self.easy:                                   # two-box mode: step through YES, NO, ...
                 self.screen = "easy"
                 self.easy_i = next(i for i, it in enumerate(self.easy_list) if it[1][1] == "Yes.")
@@ -260,11 +277,18 @@ class Speller:
         """One short line telling the user what to do on this screen."""
         if self.alarm:
             return "Help is being called"
+        if self.screen in ("asked", "answer") and self.question:
+            return "Q: " + self.question
+        if self.screen == "say":
+            return "Say it?"
         if self.screen == "easy":
             return f"Look left to say it, or NEXT for another  ({self.easy_i + 1} of {len(self.easy_list)})"
         if self.screen in HINTS:
             if self.screen == "root" and self.full:
                 return "Message is full: S - Z, EDIT, then DONE"
+            if self.screen == "root" and self.text:       # typed text is only spoken / sent after DONE
+                return ("To say it aloud: S - Z, then EDIT, then DONE" if self.mode == "patient"
+                        else "Finished? S - Z, then EDIT, then DONE")
             if self.group_word(self.screen):
                 return "Now the smaller group, or the whole word"
             return HINTS[self.screen]
@@ -277,6 +301,11 @@ class Speller:
             return [None] * 4
         if self.screen == "easy":
             return [self.easy_list[self.easy_i], None, None, ("NEXT ▶", ("next",))]
+        if self.screen == "say":                            # spelled words: say them, or Gemini's sentence
+            better = self.expanded
+            return [("SAY IT", ("say", self.say_text)),
+                    ("SAY GEMINI'S", ("say", better)) if better else None,
+                    ("KEEP TYPING", ("home",)), ("CANCEL", ("cancel",))]
         items = list(self.screens[self.screen])
         if self.screen == "root":
             if self.mode == "postcard" and not self.text and self.screens["quick1"][0]:
@@ -351,6 +380,11 @@ class Speller:
         elif kind == "done":
             self.text = self.text.strip()
             if self.mode == "patient":
+                if self.text and getattr(self.assistant, "enabled", False):
+                    self.say_text = self.text.capitalize() + "."     # ask Gemini for a fuller sentence and
+                    self.assistant.expand(self.text)                  # let the person choose what is said
+                    self.screen, self.stack = "say", []
+                    return "say:?"
                 if self.text:
                     self.spoken = self.last_spoken = self.text.capitalize() + "."
                 self.text, self.history = "", []
@@ -360,6 +394,13 @@ class Speller:
             else:                                # nothing typed yet: DONE does nothing
                 self._go_home()
                 return "empty_done"
+        elif kind == "say":
+            self.spoken = self.last_spoken = action[1]
+            self.text, self.history = "", []
+            self.screen, self.stack = self._menu_home(), []
+        elif kind == "cancel":
+            self.text, self.history = "", []
+            self.screen, self.stack = self._menu_home(), []
         elif kind == "home":
             self._go_home()
         elif kind == "needs":
@@ -381,7 +422,7 @@ class Speller:
 
     def _menu_home(self):
         """First patient page: the needs, or the single-option page in two-box mode."""
-        self.easy_i = 0
+        self.easy_i, self.question = 0, ""
         return "easy" if getattr(self, "easy", False) else "needs1"
 
     def _home(self):

@@ -298,6 +298,71 @@ def test_two_box_easy_mode():
     assert "YES" in sp.labels()[0]
 
 
+class FakeAssistant:
+    enabled = True
+
+    def __init__(self, sentence):
+        self.sentence, self.asked = sentence, []
+
+    def expand(self, words):
+        self.asked.append(words)
+
+    def get(self, kind, text):
+        return self.sentence
+
+
+def test_suggested_answers_page():
+    sp = Speller(PRED, "patient")
+    sp.ask("What would you like for dinner?", [])            # waiting for suggestions: nothing to pick
+    assert sp.screen == "asked" and sp.labels() == [""] * 4 and sp.hint().startswith("Q: What")
+    sp.ask("What would you like for dinner?", ["PIZZA", "SOUP", "NOTHING"])
+    assert sp.labels()[:3] == ["PIZZA", "SOUP", "NOTHING"] and "YES / NO" in sp.labels()[3]
+    sp.select(1)
+    assert sp.spoken == "Soup." and sp.screen == "needs1" and sp.question == ""
+    sp.ask("Are you cold?", ["YES", "NO", "A LITTLE"])       # already has yes/no: box 4 leaves the page
+    assert sp.labels()[3] == "SOMETHING ELSE"
+    sp.ask("Are you cold?", ["PIZZA", "SOUP", "NOTHING"]); sp.select(3)
+    assert sp.screen == "answer" and "YES" in sp.labels()[0]  # YES / NO page is one look away
+
+
+def test_gemini_sentence_is_only_offered_never_spoken_by_itself():
+    sp = Speller(PRED, "patient")
+    sp.assistant = FakeAssistant("My feet are cold, may I have a blanket?")
+    press(sp, (3, 3, 0)); sp.spoken = None
+    spell(sp, "COLD FEET")
+    press(sp, DONE)
+    assert sp.screen == "say" and sp.spoken is None and sp.assistant.asked == ["COLD FEET"]
+    assert sp.labels() == ["SAY IT", "SAY GEMINI'S", "KEEP TYPING", "CANCEL"]
+    sp.select(1)
+    assert sp.spoken == "My feet are cold, may I have a blanket?" and sp.text == "" and sp.screen == "needs1"
+    press(sp, (3, 3, 0)); spell(sp, "HI"); press(sp, DONE)
+    sp.select(0)                                             # the person's own words
+    assert sp.spoken == "Hi."
+    press(sp, (3, 3, 0)); spell(sp, "HI"); press(sp, DONE)
+    sp.select(2)                                             # KEEP TYPING: text is kept
+    assert sp.screen == "root" and sp.text == "HI"
+    press(sp, DONE); sp.spoken = None; sp.select(3)          # CANCEL: nothing is said
+    assert sp.spoken is None and sp.text == "" and sp.screen == "needs1"
+    sp.assistant = FakeAssistant(False)                      # Gemini had nothing: only the person's words
+    press(sp, (3, 3, 0)); spell(sp, "HI"); press(sp, DONE)
+    assert sp.labels()[1] == ""
+
+
+def test_every_builtin_phrase_has_a_translation_and_unknown_text_falls_back():
+    from speller.languages import LANGUAGES, Translator, builtin_phrases
+    tr = Translator()                            # no Gemini: only the built-in table
+    phrases = builtin_phrases()
+    assert "Emergency! I need help right now." in phrases and len(phrases) >= 25
+    for code, name in LANGUAGES[1:]:
+        missing = [p for p in phrases if not tr.lookup(p, code)]
+        assert not missing, (name, missing)
+    assert tr.lookup("Yes.", "es") == "Sí." and tr.lookup("Yes.", "en") == "Yes."
+    heard = []
+    tr.translate("I would like some water, please.", "es", heard.append)
+    tr.translate("My cat is called Biscuit.", "es", heard.append)      # not in the table, no Gemini
+    assert heard[0].startswith("Quisiera") and heard[1] == "My cat is called Biscuit."
+
+
 def test_llm_answer_must_match_and_arrive_in_time():
     p = Predictor(llm_deadline_s=0.0)        # deadline already passed for late answers
     local = p.suggest("I WANT W")

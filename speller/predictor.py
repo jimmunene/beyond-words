@@ -21,6 +21,26 @@ HERE = pathlib.Path(__file__).resolve().parent
 DATA = HERE.parent / "data"
 SEED = HERE / "seed_sentences.txt"
 FALLBACK = ["HELLO", "HI", "I", "THE", "YOU", "LOVE", "THANK", "WANT", "WATER", "HELP", "MOM", "PLEASE"]
+def load_saved_keys(names=("GEMINI_API_KEY", "ELEVENLABS_API_KEY", "GEMINI_MODEL")):
+    """Windows: a key saved with `setx` only reaches programs started afterwards, so a terminal
+    that was already open does not have it. Read such keys from the user's saved environment."""
+    if os.name != "nt":
+        return
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment") as env:
+            for name in names:
+                if not os.environ.get(name):
+                    try:
+                        os.environ[name] = str(winreg.QueryValueEx(env, name)[0])
+                    except OSError:
+                        pass
+    except Exception:
+        pass
+
+
+load_saved_keys()
+
 DEFAULT_MODEL = "gemini-3.5-flash-lite"      # override with the GEMINI_MODEL environment variable
 
 BIGRAM_WEIGHT = 0.75        # how much "what usually follows the previous word" counts vs. plain frequency
@@ -142,6 +162,7 @@ class Predictor:
         if use_llm and not self.has_key:
             print("[predictor] use_llm is on but GEMINI_API_KEY is not set: local suggestions only")
         self.llm_errors, self._llm_off_until, self._client = 0, 0.0, None
+        self.llm_patient = False                    # send patient-mode text to Gemini too (off: stays local)
         self.clinical = False                       # patient mode: also offer CLINICAL words, no event boost
         self.event_words = {w.strip().upper() for w in read_lines(DATA / "custom_words.txt")} & set(self.uni)
         self._visit = ("\0", 0.0, None)             # (typed text, first seen, Gemini word in use)
@@ -231,7 +252,13 @@ class Predictor:
         elif llm is None and now - t0 <= self.llm_deadline_s:
             llm = self._llm_word(typed)                     # Gemini answered in time
         self._visit = (typed, t0, llm)
-        if (self.use_llm and typed not in self.llm_cache and typed not in self.llm_pending
+        # Privacy: what a patient spells (health, body, family) stays on this computer unless
+        # llm_patient is switched on. Postcard text may go to Gemini.
+        # Only at word boundaries: one request per word instead of one per letter (free quota is small),
+        # and the answer keeps being offered while the letters typed still match it.
+        ask = (self.use_llm and (not self.clinical or self.llm_patient)
+               and (not typed or typed.endswith(" ")))
+        if (ask and typed not in self.llm_cache and typed not in self.llm_pending
                 and now >= self._llm_off_until):
             self.llm_pending.add(typed)
             threading.Thread(target=self._ask_llm, args=(typed,), daemon=True).start()
@@ -243,8 +270,8 @@ class Predictor:
 
     # ------------------------------------------------------------ Gemini
     def _llm_word(self, typed):
-        word = self.llm_cache.get(typed)
         _, prefix = self.split(typed)
+        word = self.llm_cache.get(typed) or self.llm_cache.get(typed[:len(typed) - len(prefix)])
         ok = word and word.startswith(prefix) and (self.clinical or word not in CLINICAL)
         return word if ok else None
 
@@ -272,7 +299,7 @@ class Predictor:
             from google.genai import types
             if self._client is None:
                 try:
-                    self._client = genai.Client(http_options=types.HttpOptions(timeout=4000))   # milliseconds
+                    self._client = genai.Client(http_options=types.HttpOptions(timeout=10000))  # milliseconds (the API refuses less than 10 s)
                 except Exception:
                     self._client = genai.Client()
             model = os.environ.get("GEMINI_MODEL", DEFAULT_MODEL)

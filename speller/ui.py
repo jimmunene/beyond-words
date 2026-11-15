@@ -12,11 +12,13 @@ Operator keys:
                  R = say the last phrase again, SPACE = acknowledge an emergency alarm
                  (sim mode: 1-4 = look at a box, 0 = look away)
   Result screen: Y = post to gallery, N = keep private, SPACE = next visitor
+                 L = next spoken language (start screen: F5)
   Anywhere     : TAB = show all keys. Start screen: F4 = two-box easy mode (patient, weak signal)
 """
 import argparse
 import csv
 import inspect
+import os
 import pathlib
 import random
 import sys
@@ -29,6 +31,8 @@ import pygame
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from art.postcard import make_postcard  # noqa: E402
 from common import ROOT, UDPReceiver, UDPSender, load_config  # noqa: E402
+from speller.assistant import Assistant  # noqa: E402
+from speller.languages import LANGUAGES, V3_LANGS, Translator, prefetch  # noqa: E402
 from speller.predictor import Predictor  # noqa: E402
 from speller.sounds import SoundBank  # noqa: E402
 from speller.state_machine import Speller, load_phrases  # noqa: E402
@@ -60,13 +64,15 @@ PINK = (255, 96, 162)
 BRAND = (CYAN, VIOLET, PINK)                    # title / accent gradient
 
 # Box 4 (and anything that only moves between pages) is drawn smaller and quieter than a real choice.
-NAV_WORDS = ("MORE", "BACK", "START", "NEXT", "KEEP RESTING", "NEEDS", "SOMETHING ELSE")
+NAV_WORDS = ("MORE", "BACK", "START", "NEXT", "KEEP RESTING", "NEEDS", "SOMETHING ELSE", "YES / NO",
+             "KEEP TYPING", "CANCEL")
 # One short line under a box that opens another page, so nobody has to guess what is inside.
 SUBTITLES = {
     "S - Z": "space, delete, done", "EDIT": "delete, done, back", "QUICK": "ready-made messages",
     "BODY": "toilet, food, position", "TALK": "yes, no, thank you", "SPELL": "write your own words",
     "REST": "pause the screen", "MY PHRASES": "your own sayings", "COME HERE": "rings a bell",
     "PAIN": "then: where it hurts", "EMERGENCY": "sounds the alarm",
+    "SAY IT": "as you typed it", "SAY GEMINI'S": "the fuller sentence",
 }
 
 
@@ -94,6 +100,7 @@ class App:
         self.f_tiny = self.font(H * 0.021, bold=False)
 
         self.predictor = Predictor(use_llm=self.cfg.get("use_llm", False))
+        self.predictor.llm_patient = bool(self.cfg.get("llm_in_patient_mode", False))   # default: postcards only
         self.speller = Speller(self.predictor, "postcard", self.cfg["max_postcard_chars"],
                                quick_messages=self.cfg.get("quick_messages"),
                                my_phrases=load_phrases(ROOT / "data" / "my_phrases.txt"))
@@ -129,6 +136,17 @@ class App:
         self.qr = self._make_qr()
         self.confetti = (0.0, [])
         self.help = False                           # TAB: operator key overview
+        # Gemini helpers (patient mode). Suggested answers use the HELPER's typed question; the fuller
+        # sentence sends what the PATIENT spelled, so it needs llm_in_patient_mode: true as well.
+        self.assistant = Assistant(enabled=self.cfg.get("use_llm", False))
+        if self.cfg.get("llm_in_patient_mode", False):
+            self.speller.assistant = self.assistant
+        self.translator = Translator(self.assistant)
+        self.click_zones = []                       # start screen: (rect, what a click there does)
+        self.lang_i = 0                             # language the voice speaks (index into LANGUAGES)
+        self.said_in = ("", "", 0.0)                # (language name, translated sentence, when)
+        self.asking = None                          # the question a helper is typing (None = not typing)
+        self.ask_wait = ("", 0.0)                   # (question sent to Gemini, when)
         # Backgrounds are painted once. The typing screen gets the calm one: nothing colourful or
         # moving may compete with the four flickering boxes.
         self.bg = self._background([(0.12, 0.05, 0.95, VIOLET, 0.20), (0.92, 1.0, 0.95, (0, 150, 175), 0.17)])
@@ -190,7 +208,25 @@ class App:
         return VOICES[self.voice_i % len(VOICES)][1] if VOICES else self.cfg.get("elevenlabs_voice_id", "")
 
     def say(self, text):
-        speak(text, self.voice_id(), self.cfg.get("use_tts", False))
+        """Speak in the chosen language (the ElevenLabs voice speaks whatever language it is given)."""
+        code, name = LANGUAGES[self.lang_i]
+
+        def out(sentence):
+            if code != "en":
+                self.said_in = (name if sentence != text else "English (no translation available)",
+                                sentence if sentence != text else "", time.time())
+            voice, on = self.voice_id(), self.cfg.get("use_tts", False)
+            if on and code in V3_LANGS:                      # this language needs the slower Eleven v3 model:
+                threading.Thread(target=lambda: (prefetch(sentence, code, voice), speak(sentence, voice, on)),
+                                 daemon=True).start()        # fetch its audio first, off the UI thread
+            else:
+                speak(sentence, voice, on)
+
+        self.translator.translate(text, code, out)
+
+    def next_language(self, step=1):
+        self.lang_i = (self.lang_i + step) % len(LANGUAGES)
+        self.said_in = ("", "", 0.0)
 
     # ---------------------------------------------------------------- look and feel
     def _background(self, glows):
@@ -527,6 +563,40 @@ class App:
                 self.last_sel_t = now
                 self.to_clf.send({"cmd": "resume"})  # start from a clean EEG window
 
+    def show_answers(self, question, options=None):
+        """Put the answer boxes up (suggested ones, or YES / NO / NOT SURE) for the helper's question."""
+        self.speller.ask(question, options)
+        self.flash, self.spoken = (-1, 0.0, ""), ("", 0.0)
+        self.last_sel_t = time.time()
+        self.to_clf.send({"cmd": "resume"})                  # judge the answer on fresh EEG only
+
+    def key_question(self, e):
+        """The helper is typing the question they just asked out loud."""
+        if e.key == pygame.K_ESCAPE:
+            self.asking = None
+        elif e.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
+            question, self.asking = self.asking.strip(), None
+            if question:                                     # boxes stay empty until the answers are ready
+                self.assistant.answers(question)
+                self.ask_wait = (question, time.time())
+                self.show_answers(question, [])
+            else:
+                self.show_answers("")
+        elif e.key == pygame.K_BACKSPACE:
+            self.asking = self.asking[:-1]
+        elif e.unicode and e.unicode.isprintable() and len(self.asking) < 70:
+            self.asking += e.unicode
+
+    def poll_assistant(self, now):
+        question, t0 = self.ask_wait
+        if not question:
+            return
+        got = self.assistant.get("answers", question)
+        if got or got is False or now - t0 > 5.0:            # ready, failed, or too slow: plain yes/no
+            self.ask_wait = ("", 0.0)
+            if self.state == "spell" and self.speller.screen == "asked":
+                self.show_answers(question, got or None)
+
     def handle_key(self, e):
         k = e.key
         if k == pygame.K_TAB:
@@ -538,6 +608,9 @@ class App:
         if self.state == "spell" and self.speller.alarm:
             if k in (pygame.K_SPACE, pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_ESCAPE):
                 self.stop_alarm(time.time())
+            return True
+        if self.asking is not None:
+            self.key_question(e)
             return True
         if k == pygame.K_ESCAPE:
             if self.state == "intro":
@@ -551,6 +624,10 @@ class App:
                 self.speller.set_mode("postcard")
             elif k == pygame.K_F2:
                 self.speller.set_mode("patient")
+            elif k in (pygame.K_F5, pygame.K_RIGHT):         # language the voice speaks
+                self.next_language()
+            elif k == pygame.K_LEFT:
+                self.next_language(-1)
             elif k == pygame.K_F4:                           # two-box easy mode (patient), for a weak signal
                 self.speller.easy = not self.speller.easy
                 self.speller.set_mode("patient")
@@ -577,9 +654,13 @@ class App:
                 self.paused = not self.paused
                 self.to_clf.send({"cmd": "pause" if self.paused else "resume"})
             elif k == pygame.K_q and self.speller.mode == "patient":
-                self.speller.ask()                               # helper asked a question: YES / NO / NOT SURE
-                self.flash, self.spoken = (-1, 0.0, ""), ("", 0.0)
-                self.to_clf.send({"cmd": "resume"})              # judge the answer on fresh EEG only
+                if self.assistant.enabled and not self.speller.easy:
+                    self.asking = ""                             # type the question: Gemini suggests answers
+                else:
+                    self.show_answers("")                        # plain YES / NO / NOT SURE
+            elif k == pygame.K_l:                            # change the spoken language on the fly
+                self.next_language()
+                self.banner = (f"Voice now speaks {LANGUAGES[self.lang_i][1]}", time.time(), CYAN)
             elif k == pygame.K_r and self.speller.last_spoken:
                 self.spoken = (self.speller.last_spoken, time.time())
                 self.say(self.speller.last_spoken)               # "say that again"
@@ -600,8 +681,14 @@ class App:
         return True
 
     def handle_click(self, pos):
-        """Demo modes only: clicking a box works like pressing its number key."""
-        if self.state != "spell" or self.speller.alarm:
+        """Start screen: click a mode card or the language arrows.
+        Typing screen (demo modes only): clicking a box works like pressing its number key."""
+        if self.state == "intro":
+            for rect, action in self.click_zones:
+                if rect.collidepoint(pos):
+                    action()
+                    return
+        if self.state != "spell" or self.speller.alarm or self.args.input == "eeg":
             return
         for i, rect in enumerate(self.boxes):
             if rect.collidepoint(pos):
@@ -613,6 +700,7 @@ class App:
 
     def to_intro(self):
         self.stop_alarm()
+        self.asking, self.ask_wait = None, ("", 0.0)
         self.state, self.nickname = "intro", ""
         self.test, self.cued = False, -1
         if self.args.input == "sim":
@@ -709,6 +797,8 @@ class App:
         fps = self.clock.get_fps()
         bad = self.frame > 120 and abs(fps - self.refresh) > 2
         self.screen.blit(self.f_tiny.render(f"{fps:5.1f} fps", True, RED if bad else DIM), (12, 8))
+        if self.lang_i:
+            self.screen.blit(self.f_tiny.render(f"speaks {LANGUAGES[self.lang_i][1]}", True, CYAN), (110, 8))
         if self.speller.mode == "patient":
             surf = self.f_tiny.render("PATIENT MODE", True, CYAN)
             r = surf.get_rect(topright=(self.W - 22, 10)).inflate(24, 10)
@@ -878,12 +968,29 @@ class App:
         else:
             if sp.text or not sp.in_menu:                        # (the top bar already says it on menu pages)
                 y = self.paragraph(sp.hint(), self.f_small, MUTED, m.centerx, y, m.w)
-            if self.spoken[0] and now - self.spoken[1] < 7:
-                self.paragraph(f"\"{self.spoken[0]}\"", self.f_mid, GREEN, m.centerx, y + 14, m.w)
+            if sp.screen == "say":                           # (this page shows Gemini's sentence here instead)
+                pass
+            elif self.spoken[0] and now - self.spoken[1] < 7:
+                y2 = self.paragraph(f"\"{self.spoken[0]}\"", self.f_mid, GREEN, m.centerx, y + 14, m.w)
+                name, sentence, t = self.said_in
+                if name and now - t < 7:                     # what the listener actually heard
+                    shown = sentence if sentence and all(self.glyph_source(c) == "main" or c == " "
+                                                         for c in sentence) else ""
+                    self.paragraph(f"spoken in {name}" + (f": {shown}" if shown else ""), self.f_tiny, CYAN,
+                                   m.centerx, y2 + 6, m.w)
             elif self.flash[2] and now - self.flash[1] < 2.0:
                 self.screen.blit(*self._centered(self.fitted(self.clean("✓ " + self.flash[2].lstrip("★* ")), m.w,
                                                              self.H * 0.05, GREEN), m.centerx, y + self.H * 0.06))
             self.draw_page_dots(m.centerx, int(self.H * 0.59))
+            if sp.screen == "say":                           # Gemini's fuller sentence, for the person to judge
+                better = sp.expanded
+                if better:
+                    self.paragraph(f"Gemini: \"{better}\"", self.f_small, CYAN, m.centerx, y + self.H * 0.03, m.w)
+                elif better is None:
+                    self.paragraph("Gemini is writing a fuller sentence...", self.f_tiny, DIM, m.centerx,
+                                   y + self.H * 0.03, m.w)
+            elif sp.screen == "asked" and self.ask_wait[0]:
+                self.paragraph("Gemini is finding answers...", self.f_tiny, DIM, m.centerx, y + self.H * 0.03, m.w)
         if self.from_clf:
             self.draw_signal(now)
         status, color = self.link_status(now)
@@ -924,9 +1031,35 @@ class App:
         self.screen.blit(t, t.get_rect(midleft=(x, r.y + r.h * 0.36)))
         b = self.f_tiny.render(blurb, True, MUTED if active else DIM)
         self.screen.blit(b, b.get_rect(midleft=(x, r.y + r.h * 0.70)))
+        self.click_zones.append((r, lambda m=title.lower(): self.speller.set_mode(m)))
+
+    def language_picker(self, center):
+        """Start screen: which language the voice speaks. Arrow keys, F5 or a click change it."""
+        code, name = LANGUAGES[self.lang_i]
+        r = pygame.Rect(0, 0, int(self.W * 0.42), int(self.H * 0.072))
+        r.center = (int(center[0]), int(center[1]))
+        self.card(r, 18, glow=CYAN if self.lang_i else None)
+        left = self.render("◀", self.H * 0.034, WHITE)
+        right = self.render("▶", self.H * 0.034, WHITE)
+        self.screen.blit(left, left.get_rect(center=(r.x + 34, r.centery)))
+        self.screen.blit(right, right.get_rect(center=(r.right - 34, r.centery)))
+        label = self.f_small.render("Voice speaks", True, MUTED)
+        value = self.f_mid.render(name, True, CYAN if self.lang_i else WHITE)
+        x = r.centerx - (label.get_width() + 14 + value.get_width()) // 2
+        self.screen.blit(label, label.get_rect(midleft=(x, r.centery)))
+        self.screen.blit(value, value.get_rect(midleft=(x + label.get_width() + 14, r.centery)))
+        half = r.w // 2
+        self.click_zones.append((pygame.Rect(r.x, r.y, half, r.h), lambda: self.next_language(-1)))
+        self.click_zones.append((pygame.Rect(r.x + half, r.y, half, r.h), lambda: self.next_language(1)))
+        cover = self.translator.ready(code)
+        if cover != "table":
+            self.text("No translations for this language: it will speak English" if cover == "none"
+                      else "Translated live by Gemini", self.f_tiny, AMBER if cover == "none" else MUTED,
+                      (r.centerx, r.bottom + 12))
 
     def draw_intro(self, now):
         W, H = self.W, self.H
+        self.click_zones = []
         cx = int(W * 0.335) if self.hero else W // 2            # with a picture: words left, picture right
         up = H * 0.055 if self.hero else 0                      # the stacked layout needs the room
         if not self.hero:
@@ -947,8 +1080,8 @@ class App:
             self.mode_card("F1", "Postcard", "Spell a message, take home the art", (cx - dx, top), not patient, YELLOW)
             self.mode_card("F2", "Patient", "Speak a need with a single look", (cx + dx, top), patient, CYAN)
 
-        field = pygame.Rect(0, 0, int(W * 0.42), int(H * 0.10))
-        field.center = (cx, int(H * (0.655 if self.hero else 0.61)))
+        field = pygame.Rect(0, 0, int(W * 0.42), int(H * 0.088))
+        field.center = (cx, int(H * (0.635 if self.hero else 0.585)))
         self.card(field, 20, glow=CYAN if patient else YELLOW)
         if self.nickname:
             surf = self.f_big.render(self.nickname, True, WHITE)
@@ -959,15 +1092,21 @@ class App:
         else:
             self.text("type a nickname", self.f_mid, DIM, field.center)
         hint = self.f_small.render("to start", True, MUTED)
-        key = self.keycap("ENTER", (cx - hint.get_width() / 2 - 8, H * (0.742 if self.hero else 0.70)))
+        self.language_picker((cx, H * (0.725 if self.hero else 0.682)))
+        key = self.keycap("ENTER", (cx - hint.get_width() / 2 - 8, H * (0.792 if self.hero else 0.755)))
         self.screen.blit(hint, hint.get_rect(midleft=(key.right + 12, key.centery)))
 
-        low = H * 0.04 if self.hero else 0
+        low = H * 0.085 if self.hero else H * 0.053
         self.text("This screen flashes. Not for anyone with photosensitive epilepsy, or who feels unwell "
                   "from flashing lights.", self.f_tiny, AMBER, (cx, H * 0.752 + low))
         status, color = self.link_status(now)
         rows = [(status, color), (f"Word prediction: {self.predictor.describe()}",
                                   AMBER if self.predictor.source == "built-in" else GREEN)]
+        if patient and self.cfg.get("use_llm"):
+            rows.append(("Gemini: Q = suggested answers" + (", fuller sentences after DONE" if self.speller.assistant
+                         else "") if self.assistant.enabled else
+                         "Gemini is on in config.yaml but GEMINI_API_KEY is not set in this window",
+                         GREEN if self.assistant.enabled else AMBER))
         if patient:
             rows.append(("Two-box easy mode is ON: one choice at a time (F4 = off)" if self.speller.easy else
                          "Weak signal? F4 = two-box easy mode", CYAN if self.speller.easy else GREEN))
@@ -976,6 +1115,9 @@ class App:
         if self.cfg.get("use_tts") and "approved" in inspect.signature(speak).parameters:
             rows.append(("Voice is silent: voice/tts.py now needs a confirmation step (docs/PART_C_IMPLEMENTATION.md)",
                          AMBER))
+        if self.cfg.get("use_tts") and not os.environ.get("ELEVENLABS_API_KEY"):
+            rows.append(("ElevenLabs key not found in this window: new sentences use the computer's built-in "
+                         "voice (open a new terminal)", AMBER))
         if VOICES:
             rows.append((f"Voice: {VOICES[self.voice_i % len(VOICES)][0]}   (F3 = next voice)", GREEN))
         if not self.vsync:
@@ -983,18 +1125,34 @@ class App:
         if self.fps_warn:
             rows.append((self.fps_warn, AMBER))
         for i, (line, col) in enumerate(rows):
-            self.chip(line, col, (cx, H * 0.795 + low + i * H * 0.034))
+            self.chip(line, col, (cx, H * 0.79 + low + i * H * 0.029))
         self.text("TAB all keys   -   ESC quit", self.f_tiny, DIM, (cx, H * 0.972))
+
+    def draw_question(self, now):
+        """The helper types the question they asked; ENTER puts suggested answers on the boxes."""
+        card = pygame.Rect(0, 0, int(self.W * 0.62), int(self.H * 0.30))
+        card.center = (self.W // 2, self.H // 2)
+        dim = pygame.Surface((self.W, self.H), pygame.SRCALPHA)
+        dim.fill((0, 0, 0, 170))
+        self.screen.blit(dim, (0, 0))
+        self.card(card, 24, fill=(20, 22, 34), glow=CYAN)
+        self.text("What did you ask?", self.f_mid, WHITE, (card.centerx, card.y + card.h * 0.20))
+        caret = "|" if int(now * 2) % 2 == 0 else " "
+        surf = self.fitted(self.asking + caret, card.w - 80, self.H * 0.05, YELLOW, bold=False)
+        self.screen.blit(surf, surf.get_rect(center=(card.centerx, int(card.y + card.h * 0.50))))
+        self.text("ENTER = Gemini suggests three answers   -   empty + ENTER = YES / NO   -   ESC cancel",
+                  self.f_tiny, MUTED, (card.centerx, card.y + card.h * 0.82))
 
     def draw_help(self):
         """TAB: every operator key in one place, so nobody has to remember them."""
         rows = [("Start screen", ""), ("F1 / F2", "postcard mode / patient mode"),
                 ("F3", "next voice"), ("F4", "two-box easy mode for a weak signal (patient)"),
+                ("F5 or arrows", "language the voice speaks (or click it)"),
                 ("ENTER", "start"),
                 ("While typing", ""), ("1 2 3 4", "pick a box, or click it (keyboard and sim modes)"),
                 ("P", "pause / continue"), ("T", "accuracy test: look at the red box"),
-                ("Q", "you asked a question: YES / NO / NOT SURE (patient)"),
-                ("R", "say the last phrase again (patient)"),
+                ("Q", "you asked a question: type it, get answer boxes (patient)"),
+                ("R  /  L", "say the last phrase again  /  next spoken language"),
                 ("SPACE", "acknowledge an emergency alarm"), ("ESC", "back to the start screen"),
                 ("Postcard ready", ""), ("Y / N", "post to the gallery / keep private"), ("SPACE", "next visitor")]
         card = pygame.Rect(0, 0, int(self.W * 0.66), int(self.H * 0.86))
@@ -1124,15 +1282,18 @@ class App:
                     running = False
                 elif e.type == pygame.KEYDOWN:
                     running = self.handle_key(e) and running
-                elif e.type == pygame.MOUSEBUTTONDOWN and e.button == 1 and self.args.input != "eeg":
+                elif e.type == pygame.MOUSEBUTTONDOWN and e.button == 1:
                     self.handle_click(e.pos)
             if self.from_clf:
                 self.poll_classifier(now)
+            self.poll_assistant(now)
             if self.state == "making":
                 self.update_making(now)
             self.screen.blit(self.bg_calm if self.state == "spell" else self.bg, (0, 0))
             {"intro": self.draw_intro, "spell": self.draw_spell, "making": self.draw_making,
              "result": self.draw_result}[self.state](now)
+            if self.asking is not None:
+                self.draw_question(now)
             if self.help:
                 self.draw_help()
             msg, t0, color = self.banner
