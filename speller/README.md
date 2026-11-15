@@ -5,12 +5,36 @@ happens when a box is picked. Works with the keyboard (demo), simulated EEG, or 
 
 ## Run
 
+One command starts everything (EEG source, classifier, speller) and stops it all again when the
+speller is closed:
+
 ```bash
-python speller/ui.py --input keyboard --windowed    # keys 1-4 or mouse pick a box
-python speller/ui.py --input sim --windowed         # with synthetic_stream.py + classifier_node.py
-python speller/ui.py --input eeg                    # live headset (add --signal replay for replay_stream.py)
-python speller/test_speller.py                      # logic tests, no pygame or EEG needed
+python speller/launch.py                        # simulation: recorded human EEG, decoded live (default)
+python speller/launch.py --dataset both         # ...g.tec recordings + the 35 benchmark people
+python speller/launch.py --source headset       # real time: g.tec Unicorn (see "Live headset" below)
+python speller/launch.py --source headset --practice   # rehearse the live path without a headset
+python speller/launch.py --source keyboard      # no EEG: keys 1-4 or mouse; boxes do not flash (F = flash)
+python speller/launch.py --check                # start the pipeline, confirm scores arrive, stop
+python speller/test_speller.py                  # logic tests, no pygame or EEG needed
 ```
+
+Add `--windowed` for a window instead of full screen. On Windows the same things are
+double-click files in the project folder: `Start BrainType.bat` (simulation),
+`Start BrainType - Live Headset.bat`, `Start BrainType - Keyboard.bat`, `Check Headset.bat`.
+They expect the Python environment in a folder named `venv`.
+
+The parts can still be started by hand in three terminals: `acquisition/dataset_stream.py`,
+`processing/classifier_node.py`, `speller/ui.py --input sim --signal replay`.
+
+What the screen shows while it runs:
+
+- Start screen: team logo (`speller/assets/logo.png`), two mode cards, nickname, language, a
+  clickable Start button, and a status panel saying where the input comes from and which helpers
+  (words, Gemini, voice, caregiver app, phone alerts) are connected.
+- Typing screen: the four boxes, score bars for the four frequencies, a line saying what the
+  decoder is doing, and after each decoded pick how clearly it stood out (Clear / Strong / Very
+  strong signal, with the decoder margin against the threshold; it is a margin, not a probability).
+- **P** pauses everything: flicker, bars, picks and the automatic demo.
 
 Press **TAB** in the app for every operator key.
 
@@ -102,9 +126,12 @@ Check the connection: `python speller/care_sync.py`. The token is a secret; neve
   ElevenLabs. With a live headset a misread look is therefore spoken at once (THAT WAS WRONG
   takes it back). Spelled sentences do get a say-it page when `llm_in_patient_mode` is on.
 - Keyboard mode records no EEG, so no postcard art is made there.
-- Not yet tested with a live headset.
+- **Never run on a real headset.** The live path is tested only on a stand-in stream of recorded
+  EEG in the Unicorn's format. Channel order and stream name are assumptions to confirm with g.tec.
+- The gentler flicker (30% contrast) has not been tried on a real brain.
+- Nothing has been tested with patients. Not a medical device; nobody should rely on the alerts.
 
-Safety: the boxes flash at 7-13 Hz. Not for anyone with photosensitive epilepsy.
+Safety: the boxes flash at 9-15 Hz. Not for anyone with photosensitive epilepsy.
 
 ## Live EEG dashboard (web)
 
@@ -121,3 +148,48 @@ each pick, while a sentence is spoken, during the alarm and when paused, and fad
 Optional `config.yaml` keys: `flicker_contrast` (default 0.3, 1.0 = black to white),
 `flicker_brightness` (default 0.36), `flicker_rest_s` (default 1.5). This lowers the risk for
 light-sensitive people; it does not remove it. Test accuracy on the real headset before relying on it.
+
+## Live headset (g.tec Unicorn Hybrid Black)
+
+Two ways to feed the speller, same decoder and same screens:
+
+| | Start with | What the EEG is |
+|---|---|---|
+| Simulation | `Start BrainType.bat` (or `python speller/launch.py`) | recorded EEG from the datasets |
+| Real time | `"Start BrainType.bat" --source headset` | the person wearing the headset |
+
+Steps at the table:
+
+1. Fit the headset with g.tec's help. The electrodes at the back of the head (Pz, PO7, Oz, PO8) are the ones that matter.
+2. In Unicorn Suite open **Unicorn LSL**, connect the headset and press **Start**.
+3. `python acquisition/unicorn_check.py` - shows every electrode once a second (good / noisy / flat),
+   the data rate and the battery. Fix contact until the starred electrodes say "good".
+   `--list` shows every LSL stream if the headset is not found.
+4. `python speller/launch.py --source headset --check` - headset found, electrodes good, scores arriving.
+5. `python speller/launch.py --source headset` - the speller, full screen. The status chip says
+   "Live headset - electrodes good", or names the electrode that lost contact, or "No data from the headset".
+6. Press **T** on the typing screen for the accuracy test: a red frame says where to look; the log
+   (`logs/selections.csv`, event `test`) records right / wrong and the time each pick took.
+
+What is different in headset mode:
+
+- The stream is found automatically (the Unicorn names it after its serial number). Force one with `--stream NAME`.
+- The decoder uses channels 4-7 of the stream (Pz PO7 Oz PO8). Change with `--channels 5,6,7` or
+  `headset_channels: [...]` in config.yaml. **Confirm the channel order with g.tec.**
+- The sample rate is read from the stream, not from config.yaml.
+- The boxes flicker by the clock instead of by frame count, so a dropped frame cannot shift the frequencies.
+- If the stream stops (Bluetooth), nothing is picked until data returns.
+- A window with a big jump in it (movement, a knocked electrode: over `artifact_uv`, default 100 microvolts after
+  filtering) cannot count towards a pick. This applies to replay too; the recordings almost never reach it.
+
+No headset yet? `python speller/launch.py --source headset --practice` runs the same live path on a
+stand-in stream (`acquisition/fake_unicorn.py`: recorded EEG laid out like the Unicorn's 17 channels,
+with offsets, drift and mains hum; `--loose Oz` and `--drop 20` imitate a bad electrode and a
+drop-out). The screen and postcards label it as recorded EEG.
+
+Measured on recordings, using only electrodes the Unicorn has (PO7, Oz, PO8): 96.7% on the 35
+benchmark people (31 of 35 at 90% or better), against 99.0% with all eight back-of-head electrodes.
+Nothing here has been run on a real Unicorn yet.
+
+The full grid (window length x CCA / FBCCA x electrode set, with ITR) is in `docs/offline_results.md`,
+made by `python eval/offline_accuracy.py`.

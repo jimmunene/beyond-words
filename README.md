@@ -2,7 +2,7 @@
 
 **An experimental brain–computer communication experience:** detect SSVEP visual selections from EEG, compose short messages, create EEG-derived postcards, and optionally read confirmed text aloud or publish a postcard.
 
-> **Project status:** Hack The Nest starter code. Synthetic EEG and replay entry points are present; real g.tec Unicorn acquisition and full end-to-end behavior still require on-device verification. The proposed **TrustLoop/IntentLock** safeguards and baseline-versus-adaptive evaluation are *planned work*, not implemented features in this starter.
+> **Project status:** Hack The Nest prototype. The full loop (EEG stream → decoder → speller → voice, phone alert, caregiver web app, postcard) runs end to end on **recorded human EEG** from public datasets, decoded live. A real-time path for the g.tec Unicorn headset is written and tested on a stand-in stream of recorded EEG, but **has not yet been run on a real headset**. The proposed **TrustLoop/IntentLock** safeguards and baseline-versus-adaptive evaluation are *planned work*, not implemented features in this starter.
 >
 > **Safety:** Not a medical device, diagnostic system, or clinically validated assistive communication product. SSVEP uses flickering visual stimuli, which may be unsafe for photosensitive participants. Run live demonstrations only with suitable screening, informed consent, a mentor-approved setup, and a readily accessible stop option. Do not collect or publish raw EEG without explicit consent.
 
@@ -31,6 +31,51 @@ pip install -r requirements.txt
 
 > `pylsl` requires a compatible liblsl native library on some systems. Pygame fullscreen rendering may not work on a headless machine. Review `config.yaml` to verify the actual EEG channel order, monitor refresh rate, and approved stimulus setup.
 
+## Quick start: one command
+
+```bash
+python speller/launch.py                      # simulation: recorded human EEG, decoded live
+python speller/launch.py --source headset     # real time: g.tec Unicorn (start Unicorn LSL first)
+python speller/launch.py --source keyboard    # no EEG: keys 1-4 pick a box
+python speller/launch.py --check              # start the pipeline, confirm scores arrive, stop
+```
+
+The launcher starts the EEG source and the classifier in the background, opens the speller and stops
+everything when the speller is closed. On Windows the same options are double-click files in the
+project folder (`Start BrainType.bat`, `Start BrainType - Live Headset.bat`,
+`Start BrainType - Keyboard.bat`, `Check Headset.bat`); they expect the environment in `venv`.
+
+The simulation needs the g.tec SSVEP dataset in `data/ssvep/` (and, for `--dataset both`, the
+Tsinghua benchmark via `python acquisition/prepare_benchmark.py`). Datasets are not in this repository.
+Details, keys and every option: [speller/README.md](speller/README.md).
+
+## What it does today
+
+- **Patient mode:** one look says a need out loud (WATER, PAIN, COME HERE, EMERGENCY, more pages, or
+  spell a sentence with word prediction). The voice can speak eleven languages.
+- **Reaching a caregiver:** COME HERE and EMERGENCY ring a bell or siren and can alert a phone;
+  every spoken message appears in a Base44 web app, where family can reply and the reply is spoken
+  on the patient's screen. A "Live EEG" page shows the decoder's scores (never raw EEG).
+- **Postcard mode:** spell a short message, get a postcard drawn from the EEG recorded while typing.
+- **Decoder:** filter-bank CCA on a 3 s window, no per-person training; a pick needs a clear margin
+  three times in a row; windows containing a large movement artifact cannot count towards a pick.
+- **Live headset support:** finds the Unicorn's LSL stream by itself, decodes from Pz PO7 Oz PO8,
+  reports electrode contact (good / noisy / flat) on screen, and pauses picking if the stream drops.
+- **Gentler flicker:** 30% contrast around a dim grey, flicker only while a choice is being made,
+  instant pause. This lowers, but does not remove, the risk for photosensitive people.
+
+## Measured results (recorded EEG, offline)
+
+| Electrodes, 3 s window, FBCCA | Mean accuracy | People at 90% or better |
+|---|---|---|
+| 8 over the visual cortex, Tsinghua benchmark (35 people) | 99.0% | 34 of 35 |
+| PO7 Oz PO8 only (the ones a Unicorn has), same 35 people | 96.7% | 31 of 35 |
+| 8 electrodes, g.tec dataset (2 people) | 91.5% (98.6% and 84.4%) | 1 of 2 |
+
+Four targets, chance = 25%. Full grid of window lengths, methods and electrode sets:
+[docs/offline_results.md](docs/offline_results.md), made by `python eval/offline_accuracy.py`.
+These are public recordings, not people wearing our headset, and nothing has been tested with patients.
+
 ## First run: keyboard-only UI
 
 ```bash
@@ -57,12 +102,14 @@ Synthetic or replay-mode data is not equivalent to live human EEG. Use the live 
 ## Live acquisition (requires hardware)
 
 ```bash
-# Terminal 1: use g.tec's approved Unicorn LSL acquisition tool
-# Terminal 2
-python processing/classifier_node.py
-# Terminal 3
-python speller/ui.py --input eeg --windowed
+# 1. In Unicorn Suite: open Unicorn LSL, connect the headset, press Start
+python acquisition/unicorn_check.py           # 2. electrode contact, once a second, until all "good"
+python speller/launch.py --source headset     # 3. classifier + speller  (T on the typing screen = accuracy test)
+
+python speller/launch.py --source headset --practice   # no headset: same path on a stand-in stream of recorded EEG
 ```
+
+The channel order (Fz C3 Cz C4 Pz PO7 Oz PO8) and the stream name are assumptions to confirm with g.tec.
 
 The Unicorn LSL tool, hardware setup, and actual channels are **not packaged in this repository**. Frequencies in `config.yaml` are demo defaults and must not be used publicly without a safe, approved setup.
 
@@ -86,9 +133,11 @@ GitHub Actions runs Python syntax checks and focused unit tests without invoking
 
 | Area | Starter contains | Remaining validation / implementation |
 | --- | --- | --- |
-| Synthetic/replay acquisition | Source modules | Run and verify on team machines |
-| SSVEP CCA + selection | Classifier and selector | Calibrate, evaluate on actual recordings |
-| Speller and word suggestions | Keyboard/EEG/sim UI paths | Test full UI and user experience |
+| Synthetic/replay acquisition | Synthetic stream, dataset replay (g.tec + Tsinghua benchmark), one-command launcher | Run and verify on other team machines |
+| Live headset | Stream discovery, electrode contact check, drop-out handling, practice stream | Run on a real Unicorn; confirm channel order; tune thresholds per person |
+| SSVEP CCA + selection | FBCCA classifier, selector, artifact rejection, offline accuracy grid | Evaluate on live recordings |
+| Speller and word suggestions | Postcard + patient modes, word prediction, start screen, signal-strength display | User testing |
+| Caregiver link | Phone alerts (ntfy; Twilio/Telegram untested), Base44 feed with replies, live decoder dashboard | Test Twilio/Telegram; access control on the public feed |
 | Postcards | EEG-to-image generator | Test artifacts and consent workflow |
 | Voice | ElevenLabs/pyttsx3 fallback code | Test credentials, playback, and consent gate |
 | Base44 | Manual queue | Connect a real gallery after provider validation |
