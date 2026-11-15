@@ -1,0 +1,674 @@
+# Short everyday messages in the style people write on postcards and with AAC devices.
+# Written by the team (not a published corpus). One sentence per line; lines starting with # are ignored.
+# Used by predictor.py when data/corpus.json is missing, and mixed into the corpus by build_corpus.py.
+hi mom
+hi dad
+hi mom i love you
+hello mom
+hello dad
+hello world
+hello from hack the nest
+hello from emu
+hello emu
+hello friend
+hello there
+hi there
+hi friend
+hi everyone
+hello everyone
+hey you
+hey there
+i love you
+i love you mom
+i love you dad
+i love you so much
+love you
+love you mom
+love you all
+i miss you
+miss you
+miss you mom
+thank you
+thank you so much
+thank you mom
+thank you for everything
+thanks a lot
+thanks mom
+thanks for coming
+you are the best
+you are awesome
+you are amazing
+you rock
+this is so cool
+this is cool
+this is amazing
+so cool
+wow
+wow this works
+it works
+it really works
+mind blown
+my mind is blown
+i typed this with my mind
+i typed this with my brain
+typed with my brain
+typed with my mind
+brain power
+my brain did this
+look mom no hands
+no hands
+hack the nest
+go emu
+go eagles
+go team
+good morning
+good night
+good luck
+good job
+happy birthday
+happy birthday mom
+happy birthday dad
+be happy
+be kind
+be brave
+stay strong
+stay kind
+have a good day
+have a nice day
+have fun
+see you soon
+see you later
+call me
+call mom
+wish you were here
+thinking of you
+you can do it
+never give up
+dream big
+peace and love
+peace
+love wins
+best day ever
+i am happy
+i am here
+i am so happy
+i was here
+we did it
+we love you
+home sweet home
+i want water
+i want some water
+i want some water please
+i want to drink
+i want to eat
+i want to sleep
+i want to go home
+i want to go outside
+i want to sit up
+i want to lie down
+i want my family
+i want to see my family
+i want to watch tv
+i want music
+i want to rest
+i want more
+i want to talk
+i want coffee
+i want tea
+i want a blanket
+i need water
+i need help
+i need help please
+i need the toilet
+i need to use the toilet
+i need my medicine
+i need a doctor
+i need the nurse
+i need to rest
+i need to sleep
+i need a break
+i need a blanket
+i need more time
+i need to move
+i need my glasses
+i need my phone
+i need you
+i am in pain
+i am hungry
+i am thirsty
+i am tired
+i am cold
+i am hot
+i am fine
+i am okay
+i am not okay
+i am sorry
+i am uncomfortable
+i am scared
+i am sad
+i am bored
+i am ready
+i am not ready
+i am awake
+i feel good
+i feel sick
+i feel better
+i feel tired
+i feel cold
+i feel pain
+i feel dizzy
+my head hurts
+my back hurts
+my leg hurts
+my arm hurts
+my neck hurts
+my stomach hurts
+it hurts
+it hurts here
+it is too hot
+it is too cold
+it is too loud
+it is too bright
+i can not breathe
+i can not sleep
+i can not see
+i can not hear you
+i do not know
+i do not want that
+i do not like it
+i do not understand
+i like it
+i like that
+i like this
+yes please
+no thank you
+yes
+no
+maybe
+maybe later
+not now
+not yet
+please help me
+please help
+please call my family
+please call my daughter
+please call my son
+please call my wife
+please call my husband
+please call the nurse
+please call the doctor
+please come here
+please stay
+please stay with me
+please wait
+please stop
+please move me
+please turn me
+please turn off the light
+please turn on the light
+please turn on the tv
+please open the window
+please close the door
+please open the door
+please give me water
+please give me my phone
+please read to me
+please say that again
+please speak slowly
+please be quiet
+can you help me
+can you help me sit up
+can you move my pillow
+can you turn me over
+can you call my family
+can you come here
+can you open the window
+can you close the door
+can you hear me
+can you see me
+can i have water
+can i have some water
+can i have more
+can i go home
+how are you
+how was your day
+what time is it
+what day is it
+what is happening
+where are you
+where is my phone
+where am i
+who is there
+when can i go home
+when are you coming
+tell me more
+tell my family i love them
+help me
+help me please
+wait
+stop
+come here
+go away
+leave me alone
+turn it off
+turn it up
+turn it down
+one more time
+again please
+that is right
+that is wrong
+that is good
+that is funny
+thank you for helping me
+thank you for coming
+thank you for your help
+good to see you
+nice to meet you
+i am glad you are here
+i love my family
+i miss my family
+see you tomorrow
+talk to you later
+sleep well
+sweet dreams
+take care
+water please
+more please
+more water please
+
+# ---------------------------------------------------------------- care needs (patient mode)
+# breathing and airway
+I cannot breathe.
+I can not breathe well.
+It is hard to breathe.
+I need suction.
+Please suction my mouth.
+Please suction my throat.
+I need suction now.
+My mask is leaking.
+My mask is too tight.
+Please adjust my mask.
+Please take my mask off.
+Please put my mask on.
+The ventilator alarm is on.
+Please check the ventilator.
+Please check my oxygen.
+I need more oxygen.
+The tube is pulling.
+The tube is blocked.
+I am choking.
+I need to cough.
+Please help me cough.
+There is mucus in my throat.
+My mouth is full of saliva.
+My chest feels tight.
+# pain
+I am in pain.
+I am in a lot of pain.
+The pain is getting worse.
+The pain is better now.
+My back hurts.
+My neck hurts.
+My head hurts.
+My shoulder hurts.
+My left shoulder hurts.
+My right shoulder hurts.
+My hip hurts.
+My legs hurt.
+My left leg hurts.
+My right arm hurts.
+My stomach hurts.
+My chest hurts.
+My throat is sore.
+My tailbone is sore.
+My heels are sore.
+I have a headache.
+I have a cramp in my leg.
+I have a cramp in my foot.
+My leg is cramping.
+My muscles are stiff.
+My hand is numb.
+My foot is numb.
+It hurts when you move me.
+It hurts here.
+That hurts.
+Please be gentle.
+I need pain medicine.
+I need my medicine.
+Is it time for my medicine?
+I already took my medicine.
+When is my next dose?
+# position and movement
+Please move me.
+Please turn me.
+Please turn me on my left side.
+Please turn me on my right side.
+Please turn me on my back.
+Please roll me over.
+Please sit me up.
+Please help me sit up.
+Please lay me down.
+Please lie me flat.
+Please raise my head.
+Please lower my head.
+Please raise the bed.
+Please lower the bed.
+Please lift my legs.
+Please lift my arm.
+Please move my arm.
+Please move my left arm.
+Please move my right leg.
+Please move my hand.
+Please straighten my legs.
+Please straighten my fingers.
+Please stretch my legs.
+Please stretch my arms.
+Please bend my knees.
+Please uncross my legs.
+Please fix my pillow.
+Please adjust my pillow.
+I need another pillow.
+Please put a pillow under my knees.
+Please put a pillow under my arm.
+Please support my head.
+My head is falling forward.
+My head is tilted too far.
+I am sliding down.
+Please pull me up.
+I am not comfortable.
+I am uncomfortable.
+I am comfortable now.
+That is better.
+That is much better thank you.
+A little higher.
+A little lower.
+A little more.
+A little to the left.
+A little to the right.
+Too much.
+Stop please.
+Please put me in my wheelchair.
+Please put me back in bed.
+Please tilt my chair back.
+Please adjust my headrest.
+Please adjust my footrest.
+My foot fell off the footrest.
+My arm fell off the armrest.
+The strap is too tight.
+# itch, skin, temperature
+My nose itches.
+My nose is itchy.
+Please scratch my nose.
+Please scratch my head.
+Please scratch my back.
+My eye itches.
+My eye is watering.
+There is something in my eye.
+Please wipe my eyes.
+Please wipe my mouth.
+Please wipe my nose.
+Please wipe my face.
+My lips are dry.
+My mouth is dry.
+My skin is dry.
+I need lotion.
+I need lip balm.
+I am cold.
+I am too cold.
+I am hot.
+I am too hot.
+I am sweating.
+I need a blanket.
+I need another blanket.
+Please take the blanket off.
+Please cover my feet.
+Please uncover my feet.
+My feet are cold.
+My hands are cold.
+Please turn on the fan.
+Please turn off the fan.
+Please turn up the heat.
+Please open the window.
+Please close the window.
+Please close the door.
+Please open the curtains.
+Please close the curtains.
+# toilet and hygiene
+I need the toilet.
+I need to use the toilet.
+I need to use the bathroom.
+I need to pee.
+I need the bedpan.
+I need the urinal.
+I had an accident.
+I am wet.
+Please change me.
+Please change my pad.
+Please change my clothes.
+Please change my shirt.
+Please change the sheets.
+My catheter is pulling.
+Please check my catheter.
+The bag is full.
+I am constipated.
+I feel sick.
+I feel nauseous.
+I am going to be sick.
+I am going to throw up.
+I feel dizzy.
+I feel faint.
+I feel weak.
+I feel feverish.
+I would like a shower.
+I would like a bath.
+Please wash my face.
+Please wash my hair.
+Please brush my teeth.
+Please brush my hair.
+Please shave me.
+Please trim my nails.
+Please clean my glasses.
+Please put my glasses on.
+Please take my glasses off.
+Please put my hearing aids in.
+# food and drink
+I am thirsty.
+I am hungry.
+I am full.
+I am not hungry.
+I want water.
+I want some water.
+I would like some water please.
+I would like a drink.
+I would like some juice.
+I would like some coffee.
+I would like some tea.
+I would like something to eat.
+I would like some more.
+A small sip please.
+I need a straw.
+The water is too cold.
+The food is too hot.
+Smaller bites please.
+Slower please.
+I need a break.
+I am finished eating.
+I do not like this.
+I like this.
+That tastes good.
+What is for dinner?
+What is for lunch?
+Is it time for my feeding?
+My feeding tube is leaking.
+My stomach feels full.
+# sleep and rest
+I am tired.
+I am very tired.
+I am exhausted.
+I want to sleep.
+I want to rest.
+I want to go to bed.
+I want to get up.
+I want to take a nap.
+I could not sleep.
+I did not sleep well.
+I had a bad dream.
+Please turn off the light.
+Please turn on the light.
+Please dim the lights.
+It is too bright.
+It is too dark.
+It is too loud.
+It is too noisy.
+Please be quiet.
+Please wake me up at seven.
+Please stay with me.
+Please do not leave.
+Please leave me alone.
+I want to be alone.
+# entertainment and devices
+Please turn on the television.
+Please turn off the television.
+Please change the channel.
+Please turn the volume up.
+Please turn the volume down.
+Please turn it up.
+Please turn it down.
+Please play some music.
+Please play my favorite song.
+Please stop the music.
+Please read to me.
+Please turn the page.
+I want to watch a movie.
+I want to watch the news.
+I want to listen to the radio.
+I want to listen to my audiobook.
+I want to go outside.
+I want to go home.
+I want some fresh air.
+I want to sit in the garden.
+Please charge my tablet.
+Please charge my phone.
+Please move the screen closer.
+Please move the screen higher.
+I cannot see the screen.
+The screen is too bright.
+The headset is slipping.
+The headset is uncomfortable.
+Please adjust the headset.
+This is not working.
+I made a mistake.
+Let me start again.
+Please wait I am still typing.
+Please be patient with me.
+Give me a minute.
+# people and help
+Please call the nurse.
+Please call the doctor.
+Please call my wife.
+Please call my husband.
+Please call my son.
+Please call my daughter.
+Please call my mother.
+Please call my family.
+Please call an ambulance.
+I need help.
+I need help now.
+I need help right now.
+Please help me.
+Please come here.
+Please come closer.
+Something is wrong.
+Something does not feel right.
+I need to see a doctor.
+I want to go to the hospital.
+I do not want to go to the hospital.
+Who is coming today?
+When are you coming back?
+When is my appointment?
+What time is it?
+What day is it?
+What is happening?
+What did the doctor say?
+Where are we going?
+Where is my wife?
+Where is my husband?
+How long will it take?
+Can you repeat that?
+Can you speak slower?
+Can you speak louder?
+I did not hear you.
+I do not understand.
+I understand.
+Please explain it again.
+Please ask me yes or no questions.
+I have a question.
+I want to tell you something.
+I need to talk to you.
+I want to decide for myself.
+It is my decision.
+I do not want that.
+I do not agree.
+I agree.
+Please ask me first.
+Please tell me what you are doing.
+# feelings
+I am scared.
+I am afraid.
+I am worried.
+I am anxious.
+I am frustrated.
+I am sad.
+I am lonely.
+I am bored.
+I am angry.
+I am upset.
+I am confused.
+I am embarrassed.
+I am okay.
+I am fine.
+I am happy.
+I am happy to see you.
+I am feeling better.
+I am feeling worse.
+I feel much better today.
+I am having a good day.
+I am having a bad day.
+I am grateful for you.
+I am proud of you.
+I am sorry.
+I miss you.
+I miss my family.
+I love you.
+I love you so much.
+I love you too.
+Thank you for helping me.
+Thank you for being here.
+Thank you for everything.
+Thank you for your patience.
+You are doing a great job.
+That was funny.
+That made me laugh.
+Tell me a joke.
+Tell me about your day.
+How was your day?
+How are you feeling?
+How are the kids?
+Give me a hug.
+Hold my hand.
+Please pray with me.
+Good morning.
+Good night.
+Good night sleep well.
+See you tomorrow.
+Happy birthday.
+# postcard classics
+Wish you were here.
+Wish you were here with me.
+Greetings from Michigan.
+Greetings from Hack The Nest.
+Having a great time.
+Having a great time here.
+See you soon.
+Sent with my brain.
+Typed with my mind.

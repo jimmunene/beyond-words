@@ -1,0 +1,9 @@
+# EXAMPLE. Copy this file to data/my_phrases.txt (that copy stays on this computer, it is not committed).
+# One per line:  LABEL ON THE BOX | sentence that is spoken
+# Up to 6 are used. Lines starting with # are ignored. Edit freely, then restart the speller.
+MY GLASSES | Please put my glasses on.
+MUSIC | Please play my favorite music.
+WINDOW | Please open the window.
+TV | Please turn on the television.
+READ TO ME | Please read to me.
+PRAY | Please pray with me.
